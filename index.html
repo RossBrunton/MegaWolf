@@ -10,8 +10,9 @@
 <body>
     <form onsubmit='load(); return false'>
         <input type='file'>
-        <input type='submit'>
+        <input type='submit' value='Load ROM'>
     </form>
+    <button onclick='emulator.doInstruction()'>Run Instruction</button>
 </body>
 
 </html>
