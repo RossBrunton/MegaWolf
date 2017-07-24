@@ -61,6 +61,25 @@ let doCondition = function(condition, value) {
     }
 }
 
+let isNegative = function(val, length) {
+    if(length == 1) {
+        return (val & 0x80) != 0;
+    }else if(length == 2) {
+        return (val & 0x8000) != 0;
+    }else{
+        return (val & 0x80000000) != 0;
+    }
+}
+
+let makeSigned = function(val, length) {
+    if(length == 1) {
+        return (val & 0x80) ? val - 0xff - 1 : val;
+    }else if(length == 2) {
+        return (val & 0x8000) ? val - 0xffff - 1 : val;
+    }else{
+        return (val & 0x80000000) ? - 0xffffffff - 1 : val;
+    }
+}
 
 export class Emulator {    
     constructor(options) {
@@ -86,12 +105,25 @@ export class Emulator {
         return 0;
     }
     
+    writeMemory(addr, value) {
+        console.log("Memory write at 0x"+addr.toString(16)+", value 0x"+value.toString(16));
+    }
+    
     readMemory8(addr) {
         return (this.readMemory(addr) & 0xff) >> 8;
     }
     
+    writeMemory8(addr, value) {
+        return this.writeMemory(addr, value & 0xff);
+    }
+    
     readMemory32(addr) {
         return this.readMemory(addr) << 16 | this.readMemory(addr + 2);
+    }
+    
+    writeMemory32(addr, value) {
+        this.writeMemory(addr, value >> 16);
+        this.writeMemory(addr + 2, value & 0xffff);
     }
     
     // Calculates the effective address that a given specifier points to and returns it
@@ -102,6 +134,15 @@ export class Emulator {
                 let toReturn = this.registers[ABASE + (ea & 0b000111)];
                 this.registers[ABASE + (ea & 0b000111)] += length;
                 return toReturn;
+            }
+            
+            case 0b101000: {
+                // Address Register Indirect with Displacement Mode 
+                let next = this.readMemory(this.registers[PC]);
+                this.registers[PC] += 2;
+                next = makeSigned(next, 2);
+                next += this.registers[ABASE + (ea & 0b000111)];
+                return next;
             }
             
             case 0b111000:
@@ -121,9 +162,7 @@ export class Emulator {
                     // PC indirect with displacement mode
                     next = this.readMemory(this.registers[PC]);
                     this.registers[PC] += 2;
-                    if(next & 0x8000) {
-                        next -= 0xffff - 1;
-                    }
+                    next = makeSigned(next, 2);
                     next += this.registers[PC] - 2;
                 }else{
                     console.error("Unknown Effective Address mode: 0b" + ea.toString(2));
@@ -162,8 +201,30 @@ export class Emulator {
         }
     }
     
-    writeMemory(addr, value) {
-        
+    writeEa(ea, value, length) {
+        switch(ea & 0b111000) {
+            case 0b000000:
+                // Data Register Direct Mode
+                this.registers[DBASE + ea] = value;
+                return;
+            
+            case 0b001000:
+                // Address Register Direct Mode
+                this.registers[ABASE + (ea & 0b000111)] = value;
+                return;
+            
+            default:
+                // Try if it's an address specifier
+                let addr = this.addressEa(ea, length);
+                if(length == 1) {
+                    this.writeMemory8(addr, value);
+                }else if(length == 2) {
+                    this.writeMemory(addr, value);
+                }else{
+                    this.writeMemory32(addr, value);
+                }
+                return;
+        }
     }
     
     start() {
@@ -197,9 +258,9 @@ export class Emulator {
                 
                 let ccr = this.registers[CCR] & X;
                 ccr &= val == 0 ? Z : 0;
-                ccr &= val < 0 ? N : 0;
+                ccr &= isNegative(val, length) ? N : 0;
                 this.registers[CCR] = ccr;
-                return;
+                return true;
             }
             
             case 0x4c80:
@@ -218,7 +279,7 @@ export class Emulator {
                     }
                 }
                 
-                return;
+                return true;
             }
         }
         
@@ -227,7 +288,7 @@ export class Emulator {
             // TODO: Use only supported modes
             let reg = (instruction & 0x0e00) >> 9;
             this.registers[ABASE + reg] = this.addressEa(effectiveAddress, 4);
-            return;
+            return true;
         }
         
         if((instruction & 0xf000) == 0x6000) {
@@ -239,20 +300,39 @@ export class Emulator {
                 if(displacement == 0x00) {
                     displacement = this.readMemory(this.registers[PC]);
                     this.registers[PC] += 2;
-                    if(displacement & 0x8000) {
-                        displacement -= 0xffff - 1;
-                    }
+                    displacement = makeSigned(displacement, 2);
                 }else{
-                    if(displacement & 0x80) {
-                        displacement -= 0xff - 1;
-                    }
+                    displacement = makeSigned(displacement, 1);
                 }
                 
                 this.registers[PC] = oldPc + displacement;
             }
-            return;
+            return true;
+        }
+        
+        if((instruction & 0xc000) == 0x0000) {
+            // move/mavea
+            let length = 1;
+            if((instruction & 0x3000) == 0x3000) {
+                length = 2;
+            }else if((instruction & 0x3000) == 0x2000) {
+                length = 4;
+            }
+            
+            let val = this.readEa(effectiveAddress, length);
+            
+            let ccr = this.registers[CCR] & X;
+            ccr &= val == 0 ? Z : 0;
+            ccr &= isNegative(val, length) ? N : 0;
+            this.registers[CCR] = ccr;
+            
+            let destEa = (instruction & 0x0fc0) >> 6;
+            destEa = (destEa >> 3) | ((destEa & 0b111) << 3);
+            this.writeEa(destEa, length);
+            return true;
         }
         
         console.log("Unknown opcode: 0x" + instruction.toString(16) + " at 0x" + this.registers[PC].toString(16));
+        return false;
     }
 }
