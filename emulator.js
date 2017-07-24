@@ -87,24 +87,23 @@ export class Emulator {
     }
     
     readMemory8(addr) {
-        return this.readMemory(addr) & 0x00ff;
+        return (this.readMemory(addr) & 0xff) >> 8;
     }
     
     readMemory32(addr) {
         return this.readMemory(addr) << 16 | this.readMemory(addr + 2);
     }
     
-    readEa(ea, oldPc) {
+    // Calculates the effective address that a given specifier points to and returns it
+    addressEa(ea, length) {
         switch(ea & 0b111000) {
-            case 0b000000:
-                // Data Register Direct Mode
-                return this.registers[DBASE + ea];
-                break;
+            case 0b011000: {
+                // Address Register Indirect with Postincrement Mode
+                let toReturn = this.registers[ABASE + (ea & 0b000111)];
+                this.registers[ABASE + (ea & 0b000111)] += length;
+                return toReturn;
+            }
             
-            case 0b001000:
-                // Address Register Direct Mode
-                return this.registers[ABASE + ea & 0b000111];
-                
             case 0b111000:
                 // Absolute Short/Long addressing mode
                 let next = 0;
@@ -125,15 +124,41 @@ export class Emulator {
                     if(next & 0x8000) {
                         next -= 0xffff - 1;
                     }
-                    next += oldPc + 0x0002;
+                    next += this.registers[PC] - 2;
                 }else{
                     console.error("Unknown Effective Address mode: 0b" + ea.toString(2));
                 }
                 
-                return this.readMemory(next);
+                return next;
             
             default:
                 console.error("Unknown Effective Address mode: 0b" + ea.toString(2));
+                return 0x0;
+        }
+    }
+    
+    // Reads the value of an effective address, reads the value of `addressEa`, and also supports register reads
+    readEa(ea, length) {
+        switch(ea & 0b111000) {
+            case 0b000000:
+                // Data Register Direct Mode
+                return this.registers[DBASE + ea];
+                break;
+            
+            case 0b001000:
+                // Address Register Direct Mode
+                return this.registers[ABASE + (ea & 0b000111)];
+            
+            default:
+                // Try if it's an address specifier
+                let addr = this.addressEa(ea, length);
+                if(length == 1) {
+                    return this.readMemory8(addr);
+                }else if(length == 2) {
+                    return this.readMemory(addr);
+                }else{
+                    return this.readMemory32(addr);
+                }
         }
     }
     
@@ -159,7 +184,7 @@ export class Emulator {
         switch(noEffectiveAddress) {
             case 0x4a00:
             case 0x4a40:
-            case 0x4a80:
+            case 0x4a80: {
                 // tst
                 let length = 1;
                 if(noEffectiveAddress == 0x4a40) {
@@ -168,21 +193,40 @@ export class Emulator {
                     length = 4;
                 }
                 
-                let val = this.readEa(effectiveAddress, oldPc);
+                let val = this.readEa(effectiveAddress, length);
                 
                 let ccr = this.registers[CCR] & X;
                 ccr &= val == 0 ? Z : 0;
                 ccr &= val < 0 ? N : 0;
                 this.registers[CCR] = ccr;
                 return;
+            }
+            
+            case 0x4c80:
+            case 0x4cc0: {
+                // movem (mem to register)
+                let length = 2;
+                if(noEffectiveAddress == 0x4cc0) {
+                    length = 4;
+                }
+                
+                let mask = this.readMemory(this.registers[PC]);
+                this.registers[PC] += 2;
+                for(let a = 1; a <= 15; a ++) {
+                    if(mask & (1 << a)) {
+                        this.registers[a] = this.readEa(effectiveAddress, length);
+                    }
+                }
+                
+                return;
+            }
         }
         
         if((instruction & 0xf1c0) == 0x41c0) {
             // lea
             // TODO: Use only supported modes
             let reg = (instruction & 0x0e00) >> 9;
-            console.log("Loading reg "+reg+" with "+effectiveAddress);
-            this.registers[ABASE + reg] = this.readEa(effectiveAddress, oldPc);
+            this.registers[ABASE + reg] = this.addressEa(effectiveAddress, 4);
             return;
         }
         
