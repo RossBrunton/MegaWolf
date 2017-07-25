@@ -20,48 +20,48 @@ let doCondition = function(condition, value) {
         case 0b0000:
             // T
             return true;
-        case 0x0001:
+        case 0b0001:
             // F
             return false;
-        case 0x0010:
+        case 0b0010:
             // HI (¬C && ¬Z)
             return (value & (C | Z)) == 0;
-        case 0x0011:
+        case 0b0011:
             // LS (C || Z)
             return (value & (C | Z)) != 0;
-        case 0x0100:
+        case 0b0100:
             // Carry Clear (¬C)
             return (value & C) == 0;
-        case 0x0101:
+        case 0b0101:
             // Carry Set (C)
             return (value & C) != 0;
-        case 0x0110:
+        case 0b0110:
             // NE (¬Z)
-            return (value & Z) != 0;
-        case 0x0111:
-            // EQ (Z)
             return (value & Z) == 0;
-        case 0x1000:
+        case 0b0111:
+            // EQ (Z)
+            return (value & Z) != 0;
+        case 0b1000:
             // VC (¬V)
             return (value & V) == 0;
-        case 0x1001:
+        case 0b1001:
             // VS (V)
             return (value & V) != 0;
-        case 0x1010:
+        case 0b1010:
             // PL (¬N)
             return (value & N) == 0;
-        case 0x1011:
+        case 0b1011:
             // MI (N)
             return (value & N) != 0;
-        case 0x1100:
+        case 0b1100:
             // GE (N && V || ¬N && ¬V)
-            return (value & N && value & V) || ((value & (N | V)) == 0);
-        case 0x1101:
+            return ((value & N) && (value & V)) || ((value & (N | V)) == 0);
+        case 0b1101:
             // LT (N && ¬V || ¬N && V)
-            return (value & N && (value & V) == 0) || ((value & N) == 0 && value & V);
-        case 0x1110:
+            return ((value & N) && (value & V) == 0) || ((value & N) == 0 && value & V);
+        case 0b1110:
             // GT (N && V && ¬Z || ¬N && ¬V && ¬Z)
-            return ((value & N && value & V) || ((value & (N | V)) == 0)) && (value & Z) == 0;
+            return (((value & N) && (value & V)) || ((value & (N | V)) == 0)) && (value & Z) == 0;
     }
 }
 
@@ -87,13 +87,13 @@ let makeSigned = function(val, length) {
 
 let addCcr = function(a, b, result) {
     let ccr = 0;
-    ccr |= tmp[0] == 0 ? Z : 0;
-    ccr |= isNegative(tmp[0], length) ? N : 0;
-    if(tmp[0] < reg) {
+    ccr |= result == 0 ? Z : 0;
+    ccr |= isNegative(result, length) ? N : 0;
+    if(result < reg) {
         ccr |= C | X;
     }
     if(ea & reg & (1 << ((length * 8) - 1)) || ~ea & ~reg & (1 << ((length * 8) - 1))) {
-        if(!(ea & tmp[0] & (1 << ((length * 8) - 1)))) {
+        if(!(ea & result & (1 << ((length * 8) - 1)))) {
             ccr |= V;
         }
     }
@@ -104,7 +104,7 @@ export class Emulator {
     constructor(options) {
         this.options = options ? options : {};
         if(this.options.version === undefined) {
-            this.options.version = 0xa1a1;
+            this.options.version = 0xa0a0;
         }
         
         
@@ -141,7 +141,7 @@ export class Emulator {
     }
     
     readMemory8(addr) {
-        return (this.readMemory(addr) & 0xff) >> 8;
+        return this.readMemory(addr) & 0xff;
     }
     
     writeMemory8(addr, value) {
@@ -282,7 +282,7 @@ export class Emulator {
         let immediate;
         switch(instruction & 0x00c0) {
             case 0x0000:
-                immediate = this.readMemory8(this.registers[PC] + 1);
+                immediate = this.readMemory8(this.registers[PC]);
                 this.registers[PC] += 2;
                 return [1, immediate, u8];
             case 0x0040:
@@ -583,8 +583,8 @@ export class Emulator {
                 tmp[0] &= immediate;
                 
                 let ccr = this.registers[CCR] & X;
-                ccr |= (this.registers[effectiveAddress]) & (1 << ((length * 8) - 1)) ? N : 0;
-                ccr |= (this.registers[effectiveAddress]) == 0 ? Z : 0;
+                ccr |= (tmp[0]) & (1 << ((length * 8) - 1)) ? N : 0;
+                ccr |= (tmp[0]) == 0 ? Z : 0;
                 
                 this.writeMemoryN(addr, tmp[0], length);
             }
@@ -640,7 +640,7 @@ export class Emulator {
             
             let destEa = (instruction & 0x0fc0) >> 6;
             destEa = (destEa >> 3) | ((destEa & 0b111) << 3);
-            this.writeEa(destEa, length);
+            this.writeEa(destEa, val, length);
             return true;
         }
         
