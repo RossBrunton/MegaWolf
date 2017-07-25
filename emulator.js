@@ -11,6 +11,10 @@ const Z = 0x0004; // Zero
 const N = 0x0008; // Negative
 const X = 0x0010; // Extend
 
+let u8 = new Uint8Array(1);
+let u16 = new Uint16Array(1);
+let u32 = new Uint32Array(1);
+
 let doCondition = function(condition, value) {
     switch(condition) {
         case 0b0000:
@@ -124,6 +128,26 @@ export class Emulator {
     writeMemory32(addr, value) {
         this.writeMemory(addr, value >> 16);
         this.writeMemory(addr + 2, value & 0xffff);
+    }
+    
+    readMemoryN(addr, n) {
+        if(n == 1) {
+            return this.readMemory8(addr);
+        }else if(n == 2) {
+            return this.readMemory(addr);
+        }else{
+            return this.readMemory32(addr);
+        }
+    }
+    
+    writeMemoryN(addr, value, n) {
+        if(n == 1) {
+            this.writeMemory8(addr, value);
+        }else if(n == 2) {
+            this.writeMemory(addr, value);
+        }else{
+            this.writeMemory32(addr, value);
+        }
     }
     
     // Calculates the effective address that a given specifier points to and returns it
@@ -257,8 +281,8 @@ export class Emulator {
                 let val = this.readEa(effectiveAddress, length);
                 
                 let ccr = this.registers[CCR] & X;
-                ccr &= val == 0 ? Z : 0;
-                ccr &= isNegative(val, length) ? N : 0;
+                ccr |= val == 0 ? Z : 0;
+                ccr |= isNegative(val, length) ? N : 0;
                 this.registers[CCR] = ccr;
                 return true;
             }
@@ -281,6 +305,89 @@ export class Emulator {
                 
                 return true;
             }
+        }
+        
+        if((instruction & 0xf1f0) == 0xc100) {
+            // abcd
+            console.error("ABCD opcode not yet supported.");
+            return true;
+        }
+        
+        if((instruction & 0xf000) == 0xd0000) {
+            // add/adda
+            let register = (instruction >> 9) & 0b111;
+            let opmode = (instruction >> 6) & 0b111;
+            let length = 0;
+            let tmp;
+            let addr = false;
+            
+            // Get length
+            switch(opmode) {
+                case 0b000:
+                case 0b100:
+                    length = 1;
+                    tmp = u8;
+                    break;
+                
+                case 0b001:
+                case 0b101:
+                case 0b011:
+                    length = 2;
+                    tmp = u16;
+                    break;
+                
+                case 0b010:
+                case 0b110:
+                case 0b111:
+                    length = 4;
+                    tmp = u32;
+                    break;
+            }
+            
+            // Do the math
+            if((opmode & 0b011) == 0b011) {
+                // < ea > + An -> An
+                register += ABASE;
+                let ea = makeSigned(this.readEa(effectiveAddress, length));
+                
+                this.registers[register] += ea;
+                break;
+            }else{
+                // < ea > + Dn -> Dn / < ea >
+                let eaAddr = 0;
+                let ea = 0;
+                if(opmode & 0b100) {
+                    eaAddr = this.addressEa(effectiveAddress, length);
+                    ea = this.readMemory(eaAddr);
+                }else{
+                    ea = this.readEa(effectiveAddress, length);
+                }
+                
+                let reg = this.registers[register];
+                tmp[0] = ea;
+                tmp[0] += reg;
+                
+                let ccr = 0;
+                ccr |= tmp[0] == 0 ? Z : 0;
+                ccr |= isNegative(tmp[0], length) ? N : 0;
+                if(tmp[0] < reg) {
+                    ccr |= C | X;
+                }
+                if(ea & reg & (1 << ((length * 8) - 1)) || ~ea & ~reg & (1 << ((length * 8) - 1))) {
+                    if(!(ea & tmp[0] & (1 << ((length * 8) - 1)))) {
+                        ccr |= V;
+                    }
+                }
+                this.registers[CCR] = ccr;
+                
+                if(opmode & 0b100) {
+                    this.writeMemoryN(eaAddr, tmp[0], length);
+                }else{
+                    this.registers[register] = tmp[0];
+                }
+            }
+            
+            return true;
         }
         
         if((instruction & 0xf1c0) == 0x41c0) {
