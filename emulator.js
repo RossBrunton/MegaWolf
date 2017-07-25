@@ -89,11 +89,11 @@ let addCcr = function(a, b, result) {
     let ccr = 0;
     ccr |= result == 0 ? Z : 0;
     ccr |= isNegative(result, length) ? N : 0;
-    if(result < reg) {
+    if(result < a) {
         ccr |= C | X;
     }
-    if(ea & reg & (1 << ((length * 8) - 1)) || ~ea & ~reg & (1 << ((length * 8) - 1))) {
-        if(!(ea & result & (1 << ((length * 8) - 1)))) {
+    if(a & b & (1 << ((length * 8) - 1)) || ~a & ~b & (1 << ((length * 8) - 1))) {
+        if(!(a & result & (1 << ((length * 8) - 1)))) {
             ccr |= V;
         }
     }
@@ -111,6 +111,10 @@ export class Emulator {
         this.mainRam = new DataView(new ArrayBuffer(1024*64));
         this.registers = new Uint32Array(18);
         this.rom = null;
+        
+        this.copyProtected = (this.options.version & 0x0f) == 0;
+        this._loCopy = false;
+        this._hiCopy = false;
     }
     
     loadRom(rom) {
@@ -137,11 +141,21 @@ export class Emulator {
     writeMemory(addr, value) {
         console.log("Memory write at 0x"+addr.toString(16)+", value 0x"+value.toString(16));
         
+        if(addr == 0xa14000 && (this.options.version & 0x0f)) {
+            if(value == 0x5345) this._loCopy = true;
+            this.copyProtected = this._loCopy && this._hiCopy;
+            return;
+        }else if(addr == 0xa14002 && (this.options.version & 0x0f)) {
+            if(value == 0x4741) this._hiCopy = true;
+            this.copyProtected = this._loCopy && this._hiCopy;
+            return;
+        }
+        
         console.warn("Write to unknown memory address 0x"+addr.toString(16));
     }
     
     readMemory8(addr) {
-        return this.readMemory(addr) & 0xff;
+        return this.readMemory(addr) >> 8;
     }
     
     writeMemory8(addr, value) {
@@ -177,9 +191,27 @@ export class Emulator {
         }
     }
     
+    // Read N bytes the PC and increment it by length. If length = 2, the lower byte of the word is read
+    pcAndAdvance(length) {
+        if(length == 1) {
+            let next = this.readMemory(this.registers[PC]) & 0x00ff;
+            this.registers[PC] += 2;
+            return next;
+        }else{
+            let next = this.readMemoryN(this.registers[PC], length);
+            this.registers[PC] += length;
+            return next;
+        }
+    }
+    
     // Calculates the effective address that a given specifier points to and returns it
     addressEa(ea, length) {
         switch(ea & 0b111000) {
+            case 0b010000: {
+                // Address Register Indirect
+                return this.registers[ABASE + (ea & 0b000111)];
+            }
+            
             case 0b011000: {
                 // Address Register Indirect with Postincrement Mode
                 let toReturn = this.registers[ABASE + (ea & 0b000111)];
@@ -196,7 +228,7 @@ export class Emulator {
                 return next;
             }
             
-            case 0b111000:
+            case 0b111000: {
                 // Absolute Short/Long addressing mode
                 let next = 0;
                 
@@ -220,6 +252,7 @@ export class Emulator {
                 }
                 
                 return next;
+            }
             
             default:
                 console.error("Unknown Effective Address mode: 0b" + ea.toString(2));
@@ -239,16 +272,20 @@ export class Emulator {
                 // Address Register Direct Mode
                 return this.registers[ABASE + (ea & 0b000111)];
             
+            case 0b111000: {
+                if(ea == 0b111100) {
+                    // Immediate
+                    let immediate;
+                    return this.pcAndAdvance(length);
+                }else{
+                    // Try if it's an address specifier
+                    return this.readMemoryN(this.addressEa(ea, length), length);
+                }
+            }
+            
             default:
                 // Try if it's an address specifier
-                let addr = this.addressEa(ea, length);
-                if(length == 1) {
-                    return this.readMemory8(addr);
-                }else if(length == 2) {
-                    return this.readMemory(addr);
-                }else{
-                    return this.readMemory32(addr);
-                }
+                return this.readMemoryN(this.addressEa(ea, length), length);
         }
     }
     
@@ -266,14 +303,7 @@ export class Emulator {
             
             default:
                 // Try if it's an address specifier
-                let addr = this.addressEa(ea, length);
-                if(length == 1) {
-                    this.writeMemory8(addr, value);
-                }else if(length == 2) {
-                    this.writeMemory(addr, value);
-                }else{
-                    this.writeMemory32(addr, value);
-                }
+                this.writeMemoryN(this.addressEa(ea, length), value, length);
                 return;
         }
     }
@@ -282,7 +312,7 @@ export class Emulator {
         let immediate;
         switch(instruction & 0x00c0) {
             case 0x0000:
-                immediate = this.readMemory8(this.registers[PC]);
+                immediate = this.readMemory(this.registers[PC]) & 0xff;
                 this.registers[PC] += 2;
                 return [1, immediate, u8];
             case 0x0040:
@@ -352,6 +382,26 @@ export class Emulator {
                 
                 return true;
             }
+        }
+        
+        if(instruction == 0x023c) {
+            let instruction2 = pcAndAdvance(2);
+            if((instruction2 & 0xff00) == 0x0000) {
+                // andi to ccr
+                console.log("> andi to ccr");
+                this.registers[CCR] &= (instruction2 | 0xff00);
+                return true;
+            }else{
+                console.error("Unknown opcode: 0x" + instruction.toString(16) + instruction2.toString(16) + 
+                    " at 0x" + oldPc.toString(16));
+                return false;
+            }
+        }
+        
+        if(instruction == 0x027c) {
+            console.log("> andi to SR");
+            console.error("ANDI to SR not yet supported.");
+            return false;
         }
         
         if((instruction & 0xf1f0) == 0xc100) {
@@ -438,8 +488,7 @@ export class Emulator {
                 case 0x0000:
                     length = 1;
                     if(!q) {
-                        immediate = this.readMemory8(this.registers[PC] + 1);
-                        this.registers[PC] += 2;
+                        immediate = this.pcAndAdvance(1);
                     }
                     tmp = u8;
                     break;
@@ -585,10 +634,29 @@ export class Emulator {
                 let ccr = this.registers[CCR] & X;
                 ccr |= (tmp[0]) & (1 << ((length * 8) - 1)) ? N : 0;
                 ccr |= (tmp[0]) == 0 ? Z : 0;
+                this.registers[CCR] = ccr;
                 
                 this.writeMemoryN(addr, tmp[0], length);
             }
             
+            return true;
+        }
+        
+        if((instruction & 0xf0f8) == 0x50c8) {
+            // dbcc
+            console.log("> dbcc");
+            let reg = instruction & 0b111;
+            let condition = (instruction >> 8) & 0b1111;
+            let displacement = this.pcAndAdvance(2);
+            
+            if(!doCondition(condition, this.registers[CCR])) {
+                let newVal = (this.registers[reg] & 0x0000ffff) - 1;
+                this.registers[reg] = (this.registers[reg] & 0xffff0000) | (newVal & 0x0000ffff);
+                if(newVal != -1) {
+                    console.log("Continuing loop");
+                    this.registers[PC] = oldPc + makeSigned(displacement, 2) + 2;
+                }
+            }
             return true;
         }
         
@@ -601,6 +669,23 @@ export class Emulator {
             return true;
         }
         
+        if((instruction & 0xf100) == 0x7000) {
+            // moveq
+            console.log("> moveq");
+            
+            let data = instruction & 0x00ff;
+            let reg = (instruction >> 9) & 0b111;
+            
+            this.registers[reg] = makeSigned(data);
+            
+            let ccr = this.registers[CCR] & X;
+            ccr |= isNegative(this.registers[reg], 4) ? N : 0;
+            ccr |= (this.registers[reg]) == 0 ? Z : 0;
+            this.registers[CCR] = ccr;
+            
+            return true;
+        }
+        
         if((instruction & 0xf000) == 0x6000) {
             // bcc
             console.log("> bcc");
@@ -608,9 +693,9 @@ export class Emulator {
             let displacement = instruction & 0x00ff;
             
             if(doCondition(condition, this.registers[CCR])) {
+                console.log("Performing branch");
                 if(displacement == 0x00) {
-                    displacement = this.readMemory(this.registers[PC]);
-                    this.registers[PC] += 2;
+                    displacement = this.pcAndAdvance(2);
                     displacement = makeSigned(displacement, 2);
                 }else{
                     displacement = makeSigned(displacement, 1);
@@ -644,7 +729,7 @@ export class Emulator {
             return true;
         }
         
-        console.log("Unknown opcode: 0x" + instruction.toString(16) + " at 0x" + this.registers[PC].toString(16));
+        console.error("Unknown opcode: 0x" + instruction.toString(16) + " at 0x" + oldPc.toString(16));
         return false;
     }
 }
