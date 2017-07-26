@@ -15,6 +15,13 @@ let u8 = new Uint8Array(1);
 let u16 = new Uint16Array(1);
 let u32 = new Uint32Array(1);
 
+const DEBUG = false;
+let log = function(msg) {
+    if(DEBUG) {
+        console.log(msg);
+    }
+}
+
 let doCondition = function(condition, value) {
     switch(condition) {
         case 0b0000:
@@ -264,13 +271,13 @@ export class M68k {
         let noEffectiveAddress = instruction & 0xffc0;
         let effectiveAddress = instruction & ~0xffc0;
         
-        console.log("-- Running instruction 0x" + instruction.toString(16) + " from 0x" + oldPc.toString(16));
+        log("-- Running instruction 0x" + instruction.toString(16) + " from 0x" + oldPc.toString(16));
         
         switch(noEffectiveAddress) {
             case 0x4a00:
             case 0x4a40:
             case 0x4a80: { // tst
-                console.log("> tst");
+                log("> tst");
                 let length = 1;
                 if(noEffectiveAddress == 0x4a40) {
                     length = 2;
@@ -289,7 +296,7 @@ export class M68k {
             
             case 0x4c80:
             case 0x4cc0: { // movem (mem to register)
-                console.log("> movem (to registers)");
+                log("> movem (to registers)");
                 let length = 2;
                 if(noEffectiveAddress == 0x4cc0) {
                     length = 4;
@@ -310,7 +317,7 @@ export class M68k {
         if(instruction == 0x023c) {
             let instruction2 = pcAndAdvance(2);
             if((instruction2 & 0xff00) == 0x0000) { // andi to ccr
-                console.log("> andi to ccr");
+                log("> andi to ccr");
                 this.registers[CCR] &= (instruction2 | 0xff00);
                 return true;
             }else{
@@ -321,19 +328,19 @@ export class M68k {
         }
         
         if(instruction == 0x027c) { // andi to SR
-            console.log("> andi to SR");
+            log("> andi to SR");
             console.error("ANDI to SR not yet supported.");
             return false;
         }
         
         if((instruction & 0xf1f0) == 0xc100) { // abcd
-            console.log("> abcd");
+            log("> abcd");
             console.error("ABCD opcode not yet supported.");
             return false;
         }
         
         if((instruction & 0xf000) == 0xd000) { // add/adda
-            console.log("> add/adda");
+            log("> add/adda");
             let register = (instruction >> 9) & 0b111;
             let opmode = (instruction >> 6) & 0b111;
             let length = 0;
@@ -399,7 +406,7 @@ export class M68k {
         
         if((instruction & 0xff00) == 0x0600 || (instruction & 0xf100) == 0x5000) { // addi
             
-            console.log("> addi/addq");
+            log("> addi/addq");
             let length = 0;
             let immediate = 0;
             let tmp;
@@ -447,7 +454,7 @@ export class M68k {
             }else if((effectiveAddress & 0b111000) == 0b001000) {
                 // To address register
                 if(!q) {
-                    console.log("Tried to add to an address register!");
+                    log("Tried to add to an address register!");
                     return false;
                 }
                 this.registers[effectiveAddress] += immediate;
@@ -467,13 +474,13 @@ export class M68k {
         }
         
         if((instruction & 0xf130) == 0xd100) { // addx
-            console.log("> addx");
+            log("> addx");
             console.error("ADDX opcode not yet supported.");
             return false;
         }
         
         if((instruction & 0xf000) == 0xc000) { // and
-            console.log("> and");
+            log("> and");
             let register = (instruction >> 9) & 0b111;
             let opmode = (instruction >> 6) & 0b111;
             let length = 0;
@@ -529,7 +536,7 @@ export class M68k {
         }
         
         if((instruction & 0xff00) == 0x0200) { // andi
-            console.log("> andi");
+            log("> andi");
             let [length, immediate, tmp] = this.getImmediate(instruction);
             
             if((effectiveAddress & 0b111000) == 0b000000) {
@@ -644,7 +651,7 @@ export class M68k {
         }
         
         if((instruction & 0xf100) == 0x0100 || (instruction & 0xff00) == 0x0800) { // btst/bchg/bclr/bset
-            console.log("> btst/bchg/bclr/bset");
+            log("> btst/bchg/bclr/bset");
             
             let chg = (instruction & 0x0040) != 0;
             let clr = (instruction & 0x0080) != 0;
@@ -701,7 +708,7 @@ export class M68k {
         }
         
         if((instruction & 0xf0f8) == 0x50c8) { // dbcc
-            console.log("> dbcc");
+            log("> dbcc");
             let reg = instruction & 0b111;
             let condition = (instruction >> 8) & 0b1111;
             let displacement = this.pcAndAdvance(2);
@@ -710,7 +717,7 @@ export class M68k {
                 let newVal = (this.registers[reg] & 0x0000ffff) - 1;
                 this.registers[reg] = (this.registers[reg] & 0xffff0000) | (newVal & 0x0000ffff);
                 if(newVal != -1) {
-                    console.log("Continuing loop");
+                    log("Continuing loop");
                     this.registers[PC] = oldPc + makeSigned(displacement, 2) + 2;
                 }
             }
@@ -718,7 +725,7 @@ export class M68k {
         }
         
         if((instruction & 0xf1c0) == 0x41c0) { // lea
-            console.log("> lea");
+            log("> lea");
             // TODO: Use only supported modes
             let reg = (instruction & 0x0e00) >> 9;
             this.registers[ABASE + reg] = this.addressEa(effectiveAddress, 4);
@@ -726,7 +733,7 @@ export class M68k {
         }
         
         if((instruction & 0xf100) == 0x7000) { // moveq
-            console.log("> moveq");
+            log("> moveq");
             
             let data = instruction & 0x00ff;
             let reg = (instruction >> 9) & 0b111;
@@ -742,7 +749,7 @@ export class M68k {
         }
         
         if((instruction & 0xfff0) == 0x4e60) { // move usp
-            console.log("> move usp");
+            log("> move usp");
             let reg = ABASE + (instruction & 0b111);
             
             if(instruction & 0x0080) {
@@ -756,13 +763,13 @@ export class M68k {
         }
         
         if((instruction & 0xf000) == 0x6000) { // bcc/bra/bsr
-            console.log("> bcc/bra/bsr");
+            log("> bcc/bra/bsr");
             let condition = (instruction & 0x0f00) >> 8;
             let displacement = instruction & 0x00ff;
             let bsr = condition == 0b001;
             
             if(!condition || bsr || doCondition(condition, this.registers[CCR])) {
-                console.log("Performing branch");
+                log("Performing branch");
                 if(displacement == 0x00) {
                     displacement = this.pcAndAdvance(2);
                     displacement = makeSigned(displacement, 2);
@@ -781,7 +788,7 @@ export class M68k {
         }
         
         if((instruction & 0xc000) == 0x0000 && (instruction & 0x3000)) { // move/mavea
-            console.log("> move/movea");
+            log("> move/movea");
             let length = 1;
             if((instruction & 0x3000) == 0x3000) {
                 length = 2;

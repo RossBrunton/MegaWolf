@@ -3,6 +3,13 @@
 import {M68k} from "./m68k.js";
 import {Z80} from "./z80.js";
 
+const DEBUG = false;
+let log = function(msg) {
+    if(DEBUG) {
+        console.log(msg);
+    }
+}
+
 export class Emulator {    
     constructor(options) {
         this.options = options ? options : {};
@@ -28,7 +35,7 @@ export class Emulator {
     }
     
     readMemory(addr) {
-        console.log("Memory read at 0x"+addr.toString(16));
+        log("Memory read at 0x"+addr.toString(16));
         addr &= 0x00ffffff;
         
         if(addr < 0x3fffff) {
@@ -54,7 +61,7 @@ export class Emulator {
     }
     
     writeMemory(addr, value) {
-        console.log("Memory write at 0x"+addr.toString(16)+", value 0x"+value.toString(16));
+        log("Memory write at 0x"+addr.toString(16)+", value 0x"+value.toString(16));
         addr &= 0x00ffffff;
         
         if(addr > 0xe00000) {
