@@ -592,7 +592,7 @@ export class M68k {
             
             let ccr = this.registers[CCR];
             ccr &= ~Z;
-            ccr |= (value & mask) ? Z : 0;
+            ccr |= (value & mask) ? 0 : Z;
             this.registers[CCR] = ccr;
             
             return true;
