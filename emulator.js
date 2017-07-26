@@ -214,9 +214,16 @@ export class Emulator {
             
             case 0b011000: {
                 // Address Register Indirect with Postincrement Mode
+                // TODO: This should be incremented/decremented by 2 if it's the SP
                 let toReturn = this.registers[ABASE + (ea & 0b000111)];
                 this.registers[ABASE + (ea & 0b000111)] += length;
                 return toReturn;
+            }
+            
+            case 0b100000: {
+                // Address Register Indirect with Predecrement Mode
+                this.registers[ABASE + (ea & 0b000111)] -= length;
+                return this.registers[ABASE + (ea & 0b000111)];
             }
             
             case 0b101000: {
@@ -642,6 +649,39 @@ export class Emulator {
             return true;
         }
         
+        if((instruction & 0xf1c0) == 0x0100 || (instruction & 0xffc0) == 0x0800) {
+            // btst
+            console.log("> btst");
+            
+            let bitNo;
+            if((instruction & 0xffc0) == 0x0800) {
+                // Immediate
+                bitNo = this.pcAndAdvance(1);
+            }else{
+                // Register
+                bitNo = this.registers[(instruction >> 9) & 0b111];
+            }
+            
+            let mask;
+            let value;
+            if((effectiveAddress & 0b111000) == 0b000000) {
+                // Register
+                mask = 1 << (bitNo % 32);
+                value = this.registers[effectiveAddress];
+            }else{
+                // Address
+                mask = 1 << (bitNo % 8);
+                value = this.readMemory(this.addressEa(effectiveAddress, 1), 1);
+            }
+            
+            let ccr = this.registers[CCR];
+            ccr &= ~Z;
+            ccr |= (value & mask) ? Z : 0;
+            this.registers[CCR] = ccr;
+            
+            return true;
+        }
+        
         if((instruction & 0xf0f8) == 0x50c8) {
             // dbcc
             console.log("> dbcc");
@@ -686,6 +726,21 @@ export class Emulator {
             return true;
         }
         
+        if((instruction & 0xfff0) == 0x4e60) {
+            // move usp
+            console.log("> move usp");
+            let reg = ABASE + (instruction & 0b111);
+            
+            if(instruction & 0x0080) {
+                // Stack > address
+                this.registers[reg] = this.registers[SP];
+            }else{
+                // Address > stack
+                this.registers[SP] = this.registers[reg];
+            }
+            return true;
+        }
+        
         if((instruction & 0xf000) == 0x6000) {
             // bcc
             console.log("> bcc");
@@ -706,7 +761,7 @@ export class Emulator {
             return true;
         }
         
-        if((instruction & 0xc000) == 0x0000) {
+        if((instruction & 0xc000) == 0x0000 && (instruction & 0x3000)) {
             // move/mavea
             console.log("> move/movea");
             let length = 1;
@@ -731,5 +786,15 @@ export class Emulator {
         
         console.error("Unknown opcode: 0x" + instruction.toString(16) + " at 0x" + oldPc.toString(16));
         return false;
+    }
+    
+    doUntilFail(count) {
+        for(let i = count; i > 0; i --) {
+            if(!this.doInstruction()) {
+                return false;
+            }
+        }
+        
+        return true;
     }
 }
