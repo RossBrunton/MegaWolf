@@ -1,6 +1,7 @@
 "use strict";
 
 import {M68k} from "./m68k.js";
+import {Z80} from "./z80.js";
 
 export class Emulator {    
     constructor(options) {
@@ -17,6 +18,9 @@ export class Emulator {
         this._hiCopy = false;
         
         this.m68k = new M68k(this);
+        this.z80 = new Z80(this);
+        
+        this.m68kOwnBus = false;
     }
     
     loadRom(rom) {
@@ -25,13 +29,22 @@ export class Emulator {
     
     readMemory(addr) {
         console.log("Memory read at 0x"+addr.toString(16));
+        addr &= 0x00ffffff;
         
         if(addr < 0x3fffff) {
             // ROM
-            return this.rom.getUint16(addr, false);;
+            return this.rom.getUint16(addr, false);
         }
         
-        if(addr == 0xa10000 || addr == 0xa10001) {
+        if(addr > 0xe00000) {
+            // Main RAM
+            return this.mainRam.getUint16(addr & 0x00ffff, false);
+        }
+        
+        if((addr & ~0x1) == 0xa11100) {
+            // /BUSREQ
+            return (!this.m68kOwnBus || this.z80.reset) ? 0x1 : 0x0;
+        }else if((addr & ~0x1) == 0xa10000) {
             return this.options.version;
         }
         
@@ -42,8 +55,31 @@ export class Emulator {
     
     writeMemory(addr, value) {
         console.log("Memory write at 0x"+addr.toString(16)+", value 0x"+value.toString(16));
+        addr &= 0x00ffffff;
         
-        if(addr == 0xa14000 && (this.options.version & 0x0f)) {
+        if(addr > 0xe00000) {
+            // Main RAM
+            this.mainRam.setUint16(addr & 0x00ffff, value, false);
+            return;
+        }
+        
+        if((addr & ~0x1) == 0xa11100) {
+            // /BUSREQ
+            if(value & 0x0101) {
+                this.z80.releaseBus();
+            }else{
+                this.z80.acquireBus();
+            }
+            return;
+        }else if((addr & ~0x1) == 0xa11200) {
+            // /RESET
+            if(value & 0x0101) {
+                this.z80.stopReset();
+            }else{
+                this.z80.startReset();
+            }
+            return;
+        }else if(addr == 0xa14000 && (this.options.version & 0x0f)) {
             if(value == 0x5345) this._loCopy = true;
             this.copyProtected = this._loCopy && this._hiCopy;
             return;
