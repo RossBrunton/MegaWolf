@@ -100,7 +100,18 @@ let addCcr = function(a, b, result) {
     return ccr;
 }
 
-export class M68k {    
+let lengthMask = function(length) {
+    switch(length) {
+        case 1:
+            return 0xff;
+        case 2:
+            return 0xffff;
+        case 3:
+            return 0xffffffff;
+    }
+}
+
+export class M68k {
     constructor(emulator) {
         this.registers = new Uint32Array(18);
         
@@ -548,8 +559,96 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xf1c0) == 0x0100 || (instruction & 0xffc0) == 0x0800) { // btst
-            console.log("> btst");
+        if((instruction & 0xf000) == 0xe000) { // asl/asr
+            let cr = (instruction >> 9) & 0b111;
+            let left = (instruction & 0x0100) != 0;
+            let size = (instruction >> 6) & 0b11;
+            let register = (instruction & 0x0020) != 0;
+            let regNo = instruction & 0b111;
+            
+            if(size == 0b11) {
+                // Memory shift
+                let addr = this.addressEa(effectiveAddress);
+                
+                let val = this.emu.readMemory(addr);
+                let xc;
+                let v;
+                if(left) {
+                    xc = val >> 15;
+                    v = !((val & 0xc000) == 0x0 || (val & 0xc000) == 0xc000);
+                    val <<= 1;
+                }else{
+                    xc = val & 0x0001;
+                    v = 0; // MSB never changes since it is propagated
+                    val >>= 1;
+                }
+                
+                this.emu.writeMemory(addr, val);
+                
+                let ccr = 0;
+                ccr |= xc ? (C | X) : 0;
+                ccr |= isNegative(val, length) ? N : 0;
+                ccr |= val == 0 ? Z : 0;
+                ccr |= v ? V : 0;
+                this.registers[CCR] = ccr;
+            }else{
+                // Register shift
+                if(register) {
+                    cr = this.registers[cr] % 64;
+                }else{
+                    if(cr == 0) cr = 8;
+                }
+                
+                let length = 1;
+                if(size == 0b01) {
+                    length = 2;
+                }else if(size == 0b10) {
+                    length = 4;
+                }
+                
+                let val = this.registers[regNo] & lengthMask(length);
+                let xc;
+                let v;
+                
+                if(cr) {
+                    if(left) {
+                        xc = (value & (0x1 << ((length * 8) - 1) >> (cr - 1))) != 0;
+                        let vmask = lengthMask(length) & ~(lengthMask(length) >> cr);
+                        v = !((value & vmask) == vmask || (value & vmask) == 0);
+                        value <<= cr;
+                    }else{
+                        // Right
+                        xc = (value & (0x1 << (cr - 1))) != 0;
+                        v = 0; // MSB never changes since it is propagated
+                        value >>= cr;
+                    }
+                    
+                    this.registers[regNo] = (this.registers[regNo] & ~lengthMask(length)) & (value & lengthMask(length));
+                    
+                    let ccr = 0;
+                    ccr |= xc ? (C | X) : 0;
+                    ccr |= isNegative(value, length) ? N : 0;
+                    ccr |= value == 0 ? Z : 0;
+                    ccr |= v ? V : 0;
+                    this.registers[CCR] = ccr;
+                }else{
+                    let ccr = this.registers[CCR];
+                    ccr &= X;
+                    ccr |= isNegative(value, length) ? N : 0;
+                    ccr |= value == 0 ? Z : 0;
+                    this.registers[CCR] = ccr;
+                }
+            }
+            
+            return true;
+        }
+        
+        if((instruction & 0xf100) == 0x0100 || (instruction & 0xff00) == 0x0800) { // btst/bchg/bclr/bset
+            console.log("> btst/bchg/bclr/bset");
+            
+            let chg = (instruction & 0x0040) != 0;
+            let clr = (instruction & 0x0080) != 0;
+            let set = (instruction & 0x00c0) != 0;
             
             let bitNo;
             if((instruction & 0xffc0) == 0x0800) {
@@ -566,10 +665,31 @@ export class M68k {
                 // Register
                 mask = 1 << (bitNo % 32);
                 value = this.registers[effectiveAddress];
+                
+                if(chg) {
+                    this.registers[effectiveAddress] ^= mask;
+                }
+                if(clr) {
+                    this.registers[effectiveAddress] &= ~mask;
+                }
+                if(set) {
+                    this.registers[effectiveAddress] |= mask;
+                }
             }else{
                 // Address
                 mask = 1 << (bitNo % 8);
-                value = this.emu.readMemory(this.addressEa(effectiveAddress, 1), 1);
+                let addr = this.addressEa(effectiveAddress, 1)
+                value = this.emu.readMemory8(addr, 1);
+                
+                if(chg) {
+                    this.emu.writeMemory8(addr, value ^ mask);
+                }
+                if(clr) {
+                    this.emu.writeMemory8(addr, value & ~mask);
+                }
+                if(set) {
+                    this.emu.writeMemory8(addr, value | mask);
+                }
             }
             
             let ccr = this.registers[CCR];
@@ -635,19 +755,24 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xf000) == 0x6000) { // bcc
-            
-            console.log("> bcc");
+        if((instruction & 0xf000) == 0x6000) { // bcc/bra/bsr
+            console.log("> bcc/bra/bsr");
             let condition = (instruction & 0x0f00) >> 8;
             let displacement = instruction & 0x00ff;
+            let bsr = condition == 0b001;
             
-            if(doCondition(condition, this.registers[CCR])) {
+            if(!condition || bsr || doCondition(condition, this.registers[CCR])) {
                 console.log("Performing branch");
                 if(displacement == 0x00) {
                     displacement = this.pcAndAdvance(2);
                     displacement = makeSigned(displacement, 2);
                 }else{
                     displacement = makeSigned(displacement, 1);
+                }
+                
+                if(bsr) {
+                    this.registers[SP] -= 4;
+                    this.emu.writeMemory32(this.registers[SP], this.registers[PC]);
                 }
                 
                 this.registers[PC] = oldPc + displacement + 2;
