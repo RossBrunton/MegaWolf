@@ -123,27 +123,23 @@ export class M68k {
     // Calculates the effective address that a given specifier points to and returns it
     addressEa(ea, length) {
         switch(ea & 0b111000) {
-            case 0b010000: {
-                // Address Register Indirect
+            case 0b010000: { // Address Register Indirect
                 return this.registers[ABASE + (ea & 0b000111)];
             }
             
-            case 0b011000: {
-                // Address Register Indirect with Postincrement Mode
+            case 0b011000: { // Address Register Indirect with Postincrement Mode
                 // TODO: This should be incremented/decremented by 2 if it's the SP
                 let toReturn = this.registers[ABASE + (ea & 0b000111)];
                 this.registers[ABASE + (ea & 0b000111)] += length;
                 return toReturn;
             }
             
-            case 0b100000: {
-                // Address Register Indirect with Predecrement Mode
+            case 0b100000: { // Address Register Indirect with Predecrement Mode
                 this.registers[ABASE + (ea & 0b000111)] -= length;
                 return this.registers[ABASE + (ea & 0b000111)];
             }
             
-            case 0b101000: {
-                // Address Register Indirect with Displacement Mode 
+            case 0b101000: { // Address Register Indirect with Displacement Mode 
                 let next = this.emu.readMemory(this.registers[PC]);
                 this.registers[PC] += 2;
                 next = makeSigned(next, 2);
@@ -152,11 +148,10 @@ export class M68k {
             }
             
             case 0b111000: {
-                // Absolute Short/Long addressing mode
                 let next = 0;
                 
-                if(ea == 0b111001 || ea == 0b111000) {
-                    // Long addressing mode
+                if(ea == 0b111001 || ea == 0b111000) { // Long addressing mode
+                    
                     next = this.emu.readMemory(this.registers[PC]);
                     this.registers[PC] += 2;
                     if(ea == 0b111001) {
@@ -164,8 +159,8 @@ export class M68k {
                         next |= this.emu.readMemory(this.registers[PC]);
                         this.registers[PC] += 2;
                     }
-                }else if(ea == 0b111010) {
-                    // PC indirect with displacement mode
+                }else if(ea == 0b111010) { // PC indirect with displacement mode
+                    
                     next = this.emu.readMemory(this.registers[PC]);
                     this.registers[PC] += 2;
                     next = makeSigned(next, 2);
@@ -186,22 +181,18 @@ export class M68k {
     // Reads the value of an effective address, reads the value of `addressEa`, and also supports register reads
     readEa(ea, length) {
         switch(ea & 0b111000) {
-            case 0b000000:
-                // Data Register Direct Mode
+            case 0b000000: { // Data Register Direct Mode
                 return this.registers[DBASE + ea];
-                break;
+            }
             
-            case 0b001000:
-                // Address Register Direct Mode
+            case 0b001000: { // Address Register Direct Mode
                 return this.registers[ABASE + (ea & 0b000111)];
+            }
             
             case 0b111000: {
-                if(ea == 0b111100) {
-                    // Immediate
-                    let immediate;
+                if(ea == 0b111100) { // Immediate
                     return this.pcAndAdvance(length);
-                }else{
-                    // Try if it's an address specifier
+                }else{ // Try if it's an address specifier
                     return this.emu.readMemoryN(this.addressEa(ea, length), length);
                 }
             }
@@ -214,20 +205,20 @@ export class M68k {
     
     writeEa(ea, value, length) {
         switch(ea & 0b111000) {
-            case 0b000000:
-                // Data Register Direct Mode
+            case 0b000000: { // Data Register Direct Mode
                 this.registers[DBASE + ea] = value;
                 return;
+            }
             
-            case 0b001000:
-                // Address Register Direct Mode
+            case 0b001000: { // Address Register Direct Mode
                 this.registers[ABASE + (ea & 0b000111)] = value;
                 return;
+            }
             
-            default:
-                // Try if it's an address specifier
+            default: { // Try if it's an address specifier
                 this.emu.writeMemoryN(this.addressEa(ea, length), value, length);
                 return;
+            }
         }
     }
     
@@ -267,8 +258,7 @@ export class M68k {
         switch(noEffectiveAddress) {
             case 0x4a00:
             case 0x4a40:
-            case 0x4a80: {
-                // tst
+            case 0x4a80: { // tst
                 console.log("> tst");
                 let length = 1;
                 if(noEffectiveAddress == 0x4a40) {
@@ -287,8 +277,7 @@ export class M68k {
             }
             
             case 0x4c80:
-            case 0x4cc0: {
-                // movem (mem to register)
+            case 0x4cc0: { // movem (mem to register)
                 console.log("> movem (to registers)");
                 let length = 2;
                 if(noEffectiveAddress == 0x4cc0) {
@@ -309,8 +298,7 @@ export class M68k {
         
         if(instruction == 0x023c) {
             let instruction2 = pcAndAdvance(2);
-            if((instruction2 & 0xff00) == 0x0000) {
-                // andi to ccr
+            if((instruction2 & 0xff00) == 0x0000) { // andi to ccr
                 console.log("> andi to ccr");
                 this.registers[CCR] &= (instruction2 | 0xff00);
                 return true;
@@ -321,21 +309,19 @@ export class M68k {
             }
         }
         
-        if(instruction == 0x027c) {
+        if(instruction == 0x027c) { // andi to SR
             console.log("> andi to SR");
             console.error("ANDI to SR not yet supported.");
             return false;
         }
         
-        if((instruction & 0xf1f0) == 0xc100) {
-            // abcd
+        if((instruction & 0xf1f0) == 0xc100) { // abcd
             console.log("> abcd");
             console.error("ABCD opcode not yet supported.");
             return false;
         }
         
-        if((instruction & 0xf000) == 0xd000) {
-            // add/adda
+        if((instruction & 0xf000) == 0xd000) { // add/adda
             console.log("> add/adda");
             let register = (instruction >> 9) & 0b111;
             let opmode = (instruction >> 6) & 0b111;
@@ -400,8 +386,8 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xff00) == 0x0600 || (instruction & 0xf100) == 0x5000) {
-            // addi
+        if((instruction & 0xff00) == 0x0600 || (instruction & 0xf100) == 0x5000) { // addi
+            
             console.log("> addi/addq");
             let length = 0;
             let immediate = 0;
@@ -469,15 +455,13 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xf130) == 0xd100) {
-            // addx
+        if((instruction & 0xf130) == 0xd100) { // addx
             console.log("> addx");
             console.error("ADDX opcode not yet supported.");
             return false;
         }
         
-        if((instruction & 0xf000) == 0xc000) {
-            // and
+        if((instruction & 0xf000) == 0xc000) { // and
             console.log("> and");
             let register = (instruction >> 9) & 0b111;
             let opmode = (instruction >> 6) & 0b111;
@@ -533,8 +517,7 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xff00) == 0x0200) {
-            // andi
+        if((instruction & 0xff00) == 0x0200) { // andi
             console.log("> andi");
             let [length, immediate, tmp] = this.getImmediate(instruction);
             
@@ -565,8 +548,7 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xf1c0) == 0x0100 || (instruction & 0xffc0) == 0x0800) {
-            // btst
+        if((instruction & 0xf1c0) == 0x0100 || (instruction & 0xffc0) == 0x0800) { // btst
             console.log("> btst");
             
             let bitNo;
@@ -598,8 +580,7 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xf0f8) == 0x50c8) {
-            // dbcc
+        if((instruction & 0xf0f8) == 0x50c8) { // dbcc
             console.log("> dbcc");
             let reg = instruction & 0b111;
             let condition = (instruction >> 8) & 0b1111;
@@ -616,8 +597,7 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xf1c0) == 0x41c0) {
-            // lea
+        if((instruction & 0xf1c0) == 0x41c0) { // lea
             console.log("> lea");
             // TODO: Use only supported modes
             let reg = (instruction & 0x0e00) >> 9;
@@ -625,8 +605,7 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xf100) == 0x7000) {
-            // moveq
+        if((instruction & 0xf100) == 0x7000) { // moveq
             console.log("> moveq");
             
             let data = instruction & 0x00ff;
@@ -642,8 +621,7 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xfff0) == 0x4e60) {
-            // move usp
+        if((instruction & 0xfff0) == 0x4e60) { // move usp
             console.log("> move usp");
             let reg = ABASE + (instruction & 0b111);
             
@@ -657,8 +635,8 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xf000) == 0x6000) {
-            // bcc
+        if((instruction & 0xf000) == 0x6000) { // bcc
+            
             console.log("> bcc");
             let condition = (instruction & 0x0f00) >> 8;
             let displacement = instruction & 0x00ff;
@@ -677,8 +655,7 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xc000) == 0x0000 && (instruction & 0x3000)) {
-            // move/mavea
+        if((instruction & 0xc000) == 0x0000 && (instruction & 0x3000)) { // move/mavea
             console.log("> move/movea");
             let length = 1;
             if((instruction & 0x3000) == 0x3000) {
