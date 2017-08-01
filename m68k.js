@@ -9,6 +9,7 @@ export const USER = 0;
 export const SUPER = 1;
 export const STOP = 2;
 
+export const EX_ILLEGAL = 0x04;
 export const EX_DIV0 = 0x05;
 export const EX_CHK = 0x06;
 export const EX_PRIV_VIO = 0x08;
@@ -413,15 +414,29 @@ export class M68k {
                 this.registers[CCR] &= (instruction2 | 0xff00);
                 return true;
             }else{
-                console.error("Unknown opcode: 0x" + instruction.toString(16) + instruction2.toString(16) + 
+                console.error("Unknown opcode: 0x" + instruction.toString(16) + ":" + instruction2.toString(16) +
                     " at 0x" + oldPc.toString(16));
                 return false;
             }
         }
         
-        if(instruction == 0x027c) { // andi to SR
-            log("> andi to SR");
-            console.error("ANDI to SR not yet supported.");
+        if(instruction == 0x0a3c) {
+            let instruction2 = pcAndAdvance(2);
+            if((instruction2 & 0xff00) == 0x0000) { // eori to ccr
+                log("> andi to ccr");
+                this.time += 12;
+                this.registers[CCR] ^= (instruction2 & 0x00ff);
+                return true;
+            }else{
+                console.error("Unknown opcode: 0x" + instruction.toString(16) + ":" + instruction2.toString(16) +
+                    " at 0x" + oldPc.toString(16));
+                return false;
+            }
+        }
+        
+        if(instruction == 0x027c || instruction == 0x0a7c) { // andi/eori to SR
+            log("> andi/eori to SR");
+            console.error("ANDI/EORI to SR not yet supported.");
             return false;
         }
         
@@ -1029,6 +1044,59 @@ export class M68k {
             
             this.registers[CCR] = ccr;
             
+            return true;
+        }
+        
+        if((instruction & 0xf130) == 0xc100) { // exg
+            log("> exg");
+            this.time += 2;
+            let mode = (instruction >> 3) & 0b11111;
+            let rx = (instruction >> 9) & 0b111;
+            let ry = instruction & 0b111;
+            
+            if((mode & 0b1) == 0b1) {
+                ry += ABASE;
+            }
+            
+            if(mode == 0b01001) {
+                rx += ABASE;
+            }
+            
+            let tmp = this.registers[ry];
+            this.registers[ry] = this.registers[rx];
+            this.registers[rx] = tmp;
+            
+            return true;
+        }
+        
+        if((instruction & 0xffb8) == 0x4c00) { // ext
+            log("> ext");
+            let reg = instruction & 0b111;
+            let dat = 0;
+            let negative = false;
+            
+            if(!(instruction & 0b1000000)) {
+                // Byte > word
+                dat = makeSigned(this.registers[reg] & lengthMask(1), 1);
+                this.registers[reg] &= ~lengthMask(2);
+                this.registers[reg] |= dat & lengthMask(2);
+            }else{
+                // Word > long
+                dat = makeSigned(this.registers[reg] & lengthMask(2), 2);
+                this.registers[reg] = dat & lengthMask(4);
+            }
+            
+            let ccr = this.registers[CCR] & X;
+            ccr |= dat == 0 ? Z : 0;
+            ccr |= dat < 0 ? N : 0;
+            this.registers[CCR] = ccr;
+            return true;
+        }
+        
+        if(instruction == 0x4afc) { // illegal
+            log("> illegal");
+            
+            this.trap(EX_ILLEGAL);
             return true;
         }
         
