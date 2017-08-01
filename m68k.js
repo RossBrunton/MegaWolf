@@ -5,6 +5,13 @@ export const CCR = 17;
 export const DBASE = 0;
 export const ABASE = 8;
 
+export const USER = 0;
+export const SUPER = 1;
+export const STOP = 2;
+
+export const EX_CHK = 0x06;
+export const EX_PRIV_VIO = 0x08;
+
 export const C = 0x0001; // Carry
 export const V = 0x0002; // Overflow
 export const Z = 0x0004; // Zero
@@ -72,6 +79,30 @@ let doCondition = function(condition, value) {
     }
 }
 
+let getOperandLength = function(instruction, allowAddress) {
+    let opmode = (instruction >> 6) & 0b111;
+    
+    if(!allowAddress && (opmode & 0b011) == 0b011) {
+        console.error("Invalid operand length value in 0x" + instruction.toString(16));
+    }
+    
+    switch(opmode) {
+        case 0b000:
+        case 0b100:
+            return [1, u8];
+        
+        case 0b001:
+        case 0b101:
+        case 0b011:
+            return [2, u16];
+        
+        case 0b010:
+        case 0b110:
+        case 0b111:
+            return [4, u32];
+    }
+}
+
 let isNegative = function(val, length) {
     if(length == 1) {
         return (val & 0x80) != 0;
@@ -92,13 +123,17 @@ let makeSigned = function(val, length) {
     }
 }
 
-let addCcr = function(a, b, result) {
+let addCcr = function(a, b, result, length) {
     let ccr = 0;
     ccr |= result == 0 ? Z : 0;
     ccr |= isNegative(result, length) ? N : 0;
+    
+    // Carry
     if(result < a) {
         ccr |= C | X;
     }
+    
+    // Overflow
     if(a & b & (1 << ((length * 8) - 1)) || ~a & ~b & (1 << ((length * 8) - 1))) {
         if(!(a & result & (1 << ((length * 8) - 1)))) {
             ccr |= V;
@@ -124,6 +159,8 @@ export class M68k {
         
         this.emu = emulator;
         this.time = 0;
+        this.mode = SUPER;
+        this.oldSp = 0;
     }
     
     // Read N bytes the PC and increment it by length. If length = 2, the lower byte of the word is read
@@ -143,6 +180,29 @@ export class M68k {
             this.registers[PC] += length;
             return next;
         }
+    }
+    
+    // Calculates and returns the ccr for a subtract operation
+    subCcr(a, b, result, length, touchX) {
+        let ccr = this.registers[CCR] & (touchX ? 0 : X);
+        ccr |= result == 0 ? Z : 0;
+        ccr |= isNegative(result, length) ? N : 0;
+        
+        // Borrow
+        if(result > a) {
+            ccr |= C | (touchX ? X : 0);
+        }
+        
+        //Overflow
+        if(result & b & (1 << ((length * 8) - 1))) {
+            ccr |= (~a & (1 << ((length * 8) - 1))) ? V : 0;
+        }
+        
+        if(~result & ~b & (1 << ((length * 8) - 1))) {
+            ccr |= (a & (1 << ((length * 8) - 1))) ? V : 0;
+        }
+        
+        return ccr;
     }
     
     // Calculates the effective address that a given specifier points to and returns it
@@ -270,8 +330,24 @@ export class M68k {
     }
     
     start() {
+        this.changeMode(SUPER);
         this.registers[SP] = this.emu.readMemory32(0x0000);
         this.registers[PC] = this.emu.readMemory32(0x0004);
+    }
+    
+    changeMode(mode) {
+        let oldMode = this.mode;
+        this.mode = mode;
+        
+        if((this.mode == USER && oldMode == SUPER) || (this.mode == SUPER && oldMode == USER)) {
+            let tmp = this.oldSp;
+            this.oldSp = this.registers[SP];
+            this.registers[SP] = tmp;
+        }
+    }
+    
+    trap(vector) {
+        console.warn("Got exception 0x" + vector.toString(16) + ", halp");
     }
     
     doInstruction() {
@@ -362,28 +438,7 @@ export class M68k {
             let tmp;
             let addr = false;
             
-            // Get length
-            switch(opmode) {
-                case 0b000:
-                case 0b100:
-                    length = 1;
-                    tmp = u8;
-                    break;
-                
-                case 0b001:
-                case 0b101:
-                case 0b011:
-                    length = 2;
-                    tmp = u16;
-                    break;
-                
-                case 0b010:
-                case 0b110:
-                case 0b111:
-                    length = 4;
-                    tmp = u32;
-                    break;
-            }
+            [length, tmp] = getOperandLength(instruction, true);
             
             // Do the math
             if((opmode & 0b011) == 0b011) {
@@ -398,9 +453,11 @@ export class M68k {
                 let eaAddr = 0;
                 let ea = 0;
                 if(opmode & 0b100) {
+                    // Destination is address
                     eaAddr = this.addressEa(effectiveAddress, length);
                     ea = this.emu.readMemory(eaAddr);
                 }else{
+                    // Destination is register
                     ea = this.readEa(effectiveAddress, length);
                 }
                 
@@ -408,12 +465,14 @@ export class M68k {
                 tmp[0] = ea;
                 tmp[0] += reg;
                 
-                this.registers[CCR] = addCcr(ea, reg, tmp[0]);
+                this.registers[CCR] = addCcr(ea, reg, tmp[0], length);
                 
                 if(opmode & 0b100) {
+                    // Destination is address
                     this.time += 4;
                     this.emu.writeMemoryN(eaAddr, tmp[0], length);
                 }else{
+                    // Destination is register
                     this.registers[register] = tmp[0];
                 }
             }
@@ -463,7 +522,7 @@ export class M68k {
                 tmp[0] = reg;
                 tmp[0] += immediate;
                 
-                this.registers[CCR] = addCcr(immediate, reg, tmp[0]);
+                this.registers[CCR] = addCcr(immediate, reg, tmp[0], length);
                 
                 if(length == 4) {
                     this.time += 4;
@@ -489,7 +548,7 @@ export class M68k {
                     this.time -= 8;
                 }
                 
-                this.registers[CCR] = addCcr(immediate, ea, tmp[0]);
+                this.registers[CCR] = addCcr(immediate, ea, tmp[0], length);
                 
                 this.emu.writeMemoryN(addr, tmp[0], length);
             }
@@ -510,26 +569,7 @@ export class M68k {
             let length = 0;
             let tmp;
             
-            // Get length
-            switch(opmode) {
-                case 0b000:
-                case 0b100:
-                    length = 1;
-                    tmp = u8;
-                    break;
-                
-                case 0b001:
-                case 0b101:
-                    length = 2;
-                    tmp = u16;
-                    break;
-                
-                case 0b010:
-                case 0b110:
-                    length = 4;
-                    tmp = u32;
-                    break;
-            }
+            [length, tmp] = getOperandLength(instruction, false);
             
             // Do the math
             let eaAddr = 0;
@@ -651,7 +691,7 @@ export class M68k {
                 this.time += 2 + (2 * cr);
                 if(length == 4) this.time += 2;
                 
-                let val = this.registers[regNo] & lengthMask(length);
+                let value = this.registers[regNo] & lengthMask(length);
                 let xc;
                 let v;
                 
@@ -769,6 +809,123 @@ export class M68k {
             return true;
         }
         
+        if((instruction & 0xf1c0) == 0x4180) { // chk
+            log("> chk");
+            this.time += 6;
+            let register = (instruction >> 9) & 0b111;
+            let upper = makeSigned(this.readEa(effectiveAddress, 2));
+            let comp = makeSigned(this.registers[register] & lengthMask(2));
+            
+            if(comp < 0 || comp > upper) {
+                let ccr = this.registers[CCR] & X;
+                ccr |= (comp < 0) ? N : 0;
+                this.registers[CCR] = ccr;
+                
+                this.trap(EX_CHK);
+            }
+        }
+        
+        if((instruction & 0xff00) == 0x4200) { // clr
+            log("> clr");
+            let [length, tmp] = getOperandLength(instruction, false);
+            
+            if((effectiveAddress & 0b111000) == 0b000000) {
+                // Register
+                this.registers[effectiveAddress] = 0;
+                if(length == 4) this.time += 2;
+            }else{
+                // Address
+                let addr = this.addressEa(effectiveAddress, length);
+                this.emu.readMemoryN(addr, length); // A read still occurs according to the manual
+                this.emu.writeMemoryN(addr, 0, length);
+                this.time += 4;
+                if(length == 4) this.time += 4;
+            }
+            
+            this.writeEa(effectiveAddress, 0, length);
+            
+            let ccr = this.registers[CCR] & X;
+            ccr |= Z;
+            this.registers[CCR] = ccr;
+        }
+        
+        if((instruction & 0xf000) == 0xb000) { // cmp/cmpa
+            log("> cmp/cmpa");
+            let register = (instruction >> 9) & 0b111;
+            let opmode = (instruction >> 6) & 0b111;
+            let length = 0;
+            let tmp;
+            let addr = false;
+            
+            [length, tmp] = getOperandLength(instruction, true);
+            
+            // Do the math
+            if((opmode & 0b011) == 0b011) {
+                // An - < ea >
+                this.time += 2;
+                register += ABASE;
+                let ea = this.readEa(effectiveAddress, length);
+                
+                let reg = this.registers[register];
+                tmp[0] = reg;
+                tmp[0] -= ea;
+                
+                this.registers[CCR] = this.subCcr(ea, reg, tmp[0], length);
+            }else{
+                // Dn - < ea >
+                if(length == 4) {
+                    this.time += 2;
+                }
+                let eaAddr = 0;
+                let ea = this.readEa(effectiveAddress, length);
+                
+                let reg = this.registers[register];
+                tmp[0] = reg;
+                tmp[0] -= ea;
+                
+                this.registers[CCR] = this.subCcr(ea, reg, tmp[0], length);
+            }
+            
+            return true;
+        }
+        
+        if((instruction & 0xf138) == 0xb108) { // cmpm
+            log("> cmpm");
+            let src = instruction & 0b111;
+            let dst = (instruction >> 9) & 0b111;
+            let length = 0;
+            let tmp;
+            let sm;
+            let dm;
+            
+            [length, tmp] = getOperandLength(instruction, true);
+            
+            sm = this.readEa(0b011000 & src, length);
+            dm = this.readEa(0b011000 & src, length);
+            
+            tmp[0] = dm;
+            tmp[0] -= sm;
+            
+            this.registers[CCR] = this.subCcr(dm, sm, tmp[0], length);
+            
+            return true;
+        }
+        
+        if((instruction & 0xff00) == 0x0c00) { // cmpi
+            log("> cmpi");
+            let [length, immediate, tmp] = this.getImmediate(instruction);
+            
+            if(length == 4 && (effectiveAddress & 0b111000) == 0) {
+                this.time += 2;
+            }
+            
+            let ea = this.readEa(effectiveAddress, length);
+            tmp[0] = ea;
+            tmp[0] -= immediate;
+            
+            this.registers[CCR] = this.subCcr(ea, immediate, tmp[0], length);
+        }
+        
         if((instruction & 0xf1c0) == 0x41c0) { // lea
             log("> lea");
             // TODO: Use only supported modes
@@ -795,14 +952,18 @@ export class M68k {
         
         if((instruction & 0xfff0) == 0x4e60) { // move usp
             log("> move usp");
-            let reg = ABASE + (instruction & 0b111);
-            
-            if(instruction & 0x0080) {
-                // Stack > address
-                this.registers[reg] = this.registers[SP];
+            if(this.mode == USER) {
+                this.trap(EX_PRIV_VIO);
             }else{
-                // Address > stack
-                this.registers[SP] = this.registers[reg];
+                let reg = ABASE + (instruction & 0b111);
+                
+                if(instruction & 0x0080) {
+                    // Stack > address
+                    this.registers[reg] = this.oldSp;
+                }else{
+                    // Address > stack
+                    this.oldSp = this.registers[reg];
+                }
             }
             return true;
         }
