@@ -12,6 +12,7 @@ export const STOP = 2;
 export const EX_ILLEGAL = 0x04;
 export const EX_DIV0 = 0x05;
 export const EX_CHK = 0x06;
+export const EX_TRAPV = 0x07;
 export const EX_PRIV_VIO = 0x08;
 
 export const C = 0x0001; // Carry
@@ -316,12 +317,14 @@ export class M68k {
     writeEa(ea, value, length) {
         switch(ea & 0b111000) {
             case 0b000000: { // Data Register Direct Mode
-                this.registers[DBASE + ea] = value;
+                this.registers[DBASE + ea] &= ~lengthMask(length);
+                this.registers[DBASE + ea] |= value & lengthMask(length);
                 return;
             }
             
             case 0b001000: { // Address Register Direct Mode
-                this.registers[ABASE + (ea & 0b000111)] = value;
+                this.registers[ABASE + ea] &= ~lengthMask(length);
+                this.registers[ABASE + ea] |= value & lengthMask(length);
                 return;
             }
             
@@ -478,6 +481,37 @@ export class M68k {
                         }
                     }
                 }
+                
+                return true;
+            }
+            
+            case 0x48c0: { // tas
+                log("> tas");
+                
+                if(effectiveAddress & 0b111000) {
+                    // Memory
+                    this.time += 6;
+                    let addr = this.addressEa(effectiveAddress, 1);
+                    
+                    let val = this.emu.readMemory8(addr);
+                    
+                    let ccr = this.registers[CCR] & X;
+                    ccr |= val == 0 ? Z : 0;
+                    ccr |= isNegative(val, 1) ? N : 0;
+                    this.registers[CCR] = ccr;
+                    
+                    val |= 0x80;
+                    this.emu.writeMemory8(addr, val);
+                }else{
+                    // Register
+                    let ccr = this.registers[CCR] & X;
+                    ccr |= (this.registers[effectiveAddress] & 0xff) == 0 ? Z : 0;
+                    ccr |= isNegative(this.registers[effectiveAddress] & 0xff, 1) ? N : 0;
+                    this.registers[CCR] = ccr;
+                    
+                    this.registers[effectiveAddress] |= 0x80;
+                }
+                
                 
                 return true;
             }
@@ -1018,7 +1052,7 @@ export class M68k {
             }
         }
         
-        if((instruction & 0xff00) == 0x4200) { // clr
+        if((instruction & 0xff00) == 0x4200 && (instruction & 0x00c0) != 0x00c0) { // clr
             log("> clr");
             let [length, tmp] = getOperandLength(instruction, false);
             
@@ -1040,6 +1074,8 @@ export class M68k {
             let ccr = this.registers[CCR] & X;
             ccr |= Z;
             this.registers[CCR] = ccr;
+            
+            return true;
         }
         
         if((instruction & 0xf000) == 0xb000) { // cmp/cmpa
@@ -1596,6 +1632,133 @@ export class M68k {
         if(instruction == 0x4e70) { // reset
             log("> reset");
             // Apparently this has no effect?
+            return true;
+        }
+        
+        if((instruction & 0xf00c) == 0xe00c) { // rol/ror (register)
+            log("> rol/ror (register)");
+            console.error("ROL/ROR with register not implemented yet");
+            return false;
+        }
+        
+        if((instruction & 0xfec0) == 0xe6c0) { // rol/ror (memory)
+            log("> rol/ror (memory)");
+            console.error("ROL/ROR with memory not implemented yet");
+            return false;
+        }
+        
+        if((instruction & 0xf00c) == 0xe008) { // roxl/roxr (register)
+            log("> roxl/roxr (register)");
+            console.error("ROXL/ROXR with register not implemented yet");
+            return false;
+        }
+        
+        if((instruction & 0xfec0) == 0xe4c0) { // roxl/roxr (memory)
+            log("> roxl/roxr (memory)");
+            console.error("ROXL/ROXR with memory not implemented yet");
+            return false;
+        }
+        
+        if(instruction == 0x4e73) { // rte
+            log("> rte");
+            console.error("RTE not implemented yet");
+            return false;
+        }
+        
+        if(instruction == 0x4e77) { // rtr
+            log("> rtr");
+            
+            this.time += 16;
+            this.registers[CCR] = this.emu.readMemory(this.registers[SP], 2);
+            this.registers[SP] += 2;
+            this.registers[PC] = this.emu.readMemory(this.registers[SP], 4);
+            this.registers[SP] += 4;
+            
+            return true;
+        }
+        
+        if(instruction == 0x4e75) { // rts
+            log("> rts");
+            
+            this.time += 12;
+            this.registers[PC] = this.emu.readMemory(this.registers[SP], 4);
+            this.registers[SP] += 4;
+            
+            return true;
+        }
+        
+        if((instruction & 0xf1f0) == 0x8100) { // sbcd
+            log("> sbcd");
+            console.error("SBCD not implemented yet");
+            return false;
+        }
+        
+        if((instruction & 0xf0c0) == 0x50c0) { // scc
+            log("> scc");
+            
+            let condition = (instruction & 0x0f00) >> 8;
+            
+            this.readEa(effectiveAddress, 1); // "A memory address is read before it is written"
+            if(doCondition(condition, this.registers[CCR])) {
+                this.writeEa(effectiveAddress, 0xff, 1);
+                if(!(effectiveAddress & 0b111000)) this.time += 2;
+            }else{
+                this.writeEa(effectiveAddress, 0x00, 1);
+            }
+            
+            return true;
+        }
+        
+        if(instruction == 0xfe72) { // stop
+            log("> stop");
+            
+            console.error("STOP not implemented yet");
+            this.pcAndAdvance(2);
+            return false;
+        }
+        
+        if((instruction & 0xfff8) == 0x4840) { // swap
+            log("> swap");
+            let reg = instruction & 0b111;
+            
+            let high = this.registers[reg] << 16;
+            this.registers[reg] >>>= 16;
+            this.registers[reg] |= high;
+            
+            let ccr = this.registers[CCR] & X;
+            ccr |= this.registers[reg] == 0 ? Z : 0;
+            ccr |= isNegative(this.registers[reg], 4) ? N : 0;
+            this.registers[CCR] = ccr;
+            
+            return true;
+        }
+        
+        if((instruction & 0xfff0) == 0x4e40) { // trap
+            log("> log");
+            // TODO: Timing
+            this.trap((instruction & 0x0f) + 32);
+            
+            return true;
+        }
+        
+        if(instruction == 0x4e76) { // trapv
+            log("> trapv");
+            // TODO: Timing
+            this.trap(EX_TRAPV);
+            
+            return true;
+        }
+        
+        if((instruction & 0xfff8) == 0x4e58) { // unlk
+            log("> unlk");
+            this.time += 8;
+            
+            let reg = ABASE + (instruction & 0b111);
+            
+            this.registers[SP] = this.registers[reg];
+            this.registers[reg] = this.emu.readMemory(this.registers[SP], 4);
+            this.registers[SP] += 4;
+            
             return true;
         }
         
