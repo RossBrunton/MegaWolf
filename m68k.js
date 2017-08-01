@@ -563,8 +563,9 @@ export class M68k {
             return false;
         }
         
-        if((instruction & 0xf000) == 0xc000) { // and
-            log("> and");
+        if((instruction & 0xf000) == 0xc000 || (instruction & 0xf100) == 0xb100 
+        || (instruction & 0xf000) == 0x8000) { // and/eor/or
+            log("> and/eor/or");
             let register = (instruction >> 9) & 0b111;
             let opmode = (instruction >> 6) & 0b111;
             let length = 0;
@@ -576,16 +577,28 @@ export class M68k {
             let eaAddr = 0;
             let ea = 0;
             if(opmode & 0b100) {
-                eaAddr = this.addressEa(effectiveAddress, length);
-                ea = this.emu.readMemory(eaAddr);
-                this.time += 4;
+                // -> < ea >
+                if((effectiveAddress & 0b111000) == 0) {
+                    // Register
+                    ea = this.registers[effectiveAddress];
+                }else{
+                    // Memory
+                    eaAddr = this.addressEa(effectiveAddress, length);
+                    ea = this.emu.readMemory(eaAddr);
+                    this.time += 4;
+                }
             }else{
+                // -> r
                 ea = this.readEa(effectiveAddress, length);
             }
             
             let reg = this.registers[register];
             tmp[0] = ea;
-            tmp[0] &= reg;
+            switch(instruction & 0xf000) {
+                case 0xc000: tmp[0] &= reg; break; // and
+                case 0xb000: tmp[0] ^= reg; break; // eor
+                case 0x8000: tmp[0] |= reg; break; // or
+            }
             
             let ccr = this.registers[CCR] & X;
             ccr |= (tmp[0] & (1 << ((length * 8) - 1))) ? N : 0;
@@ -593,27 +606,55 @@ export class M68k {
             this.registers[CCR] = ccr;
             
             if(opmode & 0b100) {
-                this.time += 4;
-                if(length == 4) this.time += 4;
-                this.emu.writeMemoryN(eaAddr, tmp[0], length);
-            }else{
-                this.registers[register] = (this.registers[register] & ~lengthMask(length)) & tmp[0];
-                if(length = 4) {
+                // -> < ea >
+                if(length == 4) {
                     this.time += 2;
+                    if((instruction & 0xf000) == 0xb000) {
+                        // eor
+                        this.time += 2;
+                    }
+                }
+                
+                if((effectiveAddress & 0b111000) == 0) {
+                    // Register
+                    this.registers[effectiveAddress] = (this.registers[effectiveAddress] & ~lengthMask(length)) | tmp[0];
+                }else{
+                    // Address
+                    this.time += 4;
+                    if(length == 4) this.time += 4;
+                    
+                    this.emu.writeMemoryN(eaAddr, tmp[0], length);
+                }
+            }else{
+                // -> r
+                this.registers[register] = (this.registers[register] & ~lengthMask(length)) | tmp[0];
+                if((instruction & 0xf000) == 0xb000) {
+                    // eor
+                    console.error("Tried to write the result of an eor to non EA destination.");
+                    debugger;
+                    return false;
                 }
             }
             
             return true;
         }
         
-        if((instruction & 0xff00) == 0x0200) { // andi
-            log("> andi");
+        if((instruction & 0xff00) == 0x0200 || (instruction & 0xff00) == 0x0a00
+        || (instruction & 0xff00) == 0x0000) { // andi/eori/ori
+            log("> andi/eori");
             let [length, immediate, tmp] = this.getImmediate(instruction);
             
             if((effectiveAddress & 0b111000) == 0b000000) {
                 // To data register
-                let reg = this.registers[effectiveAddress];
-                this.registers[effectiveAddress] &= immediate;
+                let reg = this.registers[effectiveAddress] & lengthMask(length);
+                this.registers[effectiveAddress] = (this.registers[effectiveAddress] & ~lengthMask(length))
+                this.registers[effectiveAddress] |= immediate;
+                
+                switch(instruction & 0xff00) {
+                    case 0x0200: this.registers[effectiveAddress] &= reg; break; // andi
+                    case 0x0a00: this.registers[effectiveAddress] ^= reg; break; // eori
+                    case 0x0000: this.registers[effectiveAddress] |= reg; break; // ori
+                }
                 
                 let ccr = this.registers[CCR] & X;
                 ccr |= (this.registers[effectiveAddress]) & (1 << ((length * 8) - 1)) ? N : 0;
@@ -625,8 +666,12 @@ export class M68k {
                 // To memory address
                 let addr = this.addressEa(effectiveAddress);
                 let ea = this.emu.readMemoryN(addr, length);
-                tmp[0] = ea;
-                tmp[0] &= immediate;
+                tmp[0] = immediate;
+                switch(instruction & 0xff00) {
+                    case 0x0200: tmp[0] &= reg; break; // andi
+                    case 0x0a00: tmp[0] ^= reg; break; // eori
+                    case 0x0000: tmp[0] |= reg; break; // ori
+                }
                 
                 let ccr = this.registers[CCR] & X;
                 ccr |= (tmp[0]) & (1 << ((length * 8) - 1)) ? N : 0;
