@@ -9,6 +9,7 @@ export const USER = 0;
 export const SUPER = 1;
 export const STOP = 2;
 
+export const EX_DIV0 = 0x05;
 export const EX_CHK = 0x06;
 export const EX_PRIV_VIO = 0x08;
 
@@ -924,6 +925,66 @@ export class M68k {
             tmp[0] -= immediate;
             
             this.registers[CCR] = this.subCcr(ea, immediate, tmp[0], length);
+        }
+        
+        if((instruction & 0xf1c0) == 0x81c0) { // divs
+            log("> divs");
+            this.time += 154;
+            let source = makeSigned(this.readEa(effectiveAddress, 2), 2);
+            let reg = (instruction >> 9) & 0b111;
+            let dest = makeSigned(this.registers[reg], 4); // "divides a long word by a word"
+            
+            if(source == 0) {
+                this.trap(EX_DIV0);
+                return true;
+            }
+            
+            let result = dest / source;
+            let remainder = dest % source * (dest < 0 ? -1 : 1);
+            
+            let ccr = this.registers[CCR] & X;
+            ccr |= result == 0 ? Z : 0;
+            ccr |= result < 0 ? N : 0;
+            if((result > 0x7fff) || (result < -0x7fff)) {
+                // Overflow!
+                ccr |= V;
+            }else{
+                this.registers[reg] = ((remainder & 0xffff) << 16) | (result & 0xffff);
+            }
+            
+            this.registers[CCR] = ccr;
+            
+            return true;
+        }
+        
+        if((instruction & 0xf1c0) == 0x80c0) { // divu
+            log("> divu");
+            this.time += 136;
+            let source = this.readEa(effectiveAddress, 2);
+            let reg = (instruction >> 9) & 0b111;
+            let dest = this.registers[reg]; // "divides a long word by a word"
+            
+            if(source == 0) {
+                this.trap(EX_DIV0);
+                return true;
+            }
+            
+            let result = dest / source;
+            let remainder = dest % source;
+            
+            let ccr = this.registers[CCR] & X;
+            ccr |= result == 0 ? Z : 0;
+            ccr |= result < 0 ? N : 0;
+            if(result > 0xffff) {
+                // Overflow!
+                ccr |= V;
+            }else{
+                this.registers[reg] = ((remainder & 0xffff) << 16) | (result & 0xffff);
+            }
+            
+            this.registers[CCR] = ccr;
+            
+            return true;
         }
         
         if((instruction & 0xf1c0) == 0x41c0) { // lea
