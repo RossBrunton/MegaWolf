@@ -2,6 +2,7 @@
 
 import {M68k} from "./m68k.js";
 import {Z80} from "./z80.js";
+import {Controller} from "./controller.js";
 
 const DEBUG = false;
 let log = function(msg) {
@@ -28,6 +29,10 @@ export class Emulator {
         this.z80 = new Z80(this);
         
         this.m68kOwnBus = false;
+        
+        this.ports = [new Controller(), new Controller(), new Controller()];
+        
+        this.time = 0;
     }
     
     loadRom(rom) {
@@ -48,11 +53,26 @@ export class Emulator {
             return this.mainRam.getUint16(addr & 0x00ffff, false);
         }
         
-        if((addr & ~0x1) == 0xa11100) {
-            // /BUSREQ
-            return (!this.m68kOwnBus || this.z80.reset) ? 0x1 : 0x0;
-        }else if((addr & ~0x1) == 0xa10000) {
-            return this.options.version;
+        switch(addr & ~1) {
+            case 0xa11100:
+                // Z80 /BUSREQ
+                return (!this.m68kOwnBus || this.z80.reset) ? 0x1 : 0x0;
+            
+            case 0xa10000:
+                // Version register
+                return this.options.version;
+            
+            case 0xa10002:
+            case 0xa10004:
+            case 0xa10006:
+                // Controller n data
+                return this.ports[((addr & ~1) - 0xa10002) / 2].readData(this.time);
+            
+            case 0xa10008:
+            case 0xa1000a:
+            case 0xa1000c:
+                // Controller n control
+                return this.ports[((addr & ~1) - 0xa10008) / 2].readControl(this.time);
         }
         
         console.warn("Read from unknown memory address 0x"+addr.toString(16));
@@ -70,23 +90,42 @@ export class Emulator {
             return;
         }
         
-        if((addr & ~0x1) == 0xa11100) {
-            // /BUSREQ
-            if(value & 0x0101) {
-                this.z80.releaseBus();
-            }else{
-                this.z80.acquireBus();
-            }
-            return;
-        }else if((addr & ~0x1) == 0xa11200) {
-            // /RESET
-            if(value & 0x0101) {
-                this.z80.stopReset();
-            }else{
-                this.z80.startReset();
-            }
-            return;
-        }else if(addr == 0xa14000 && (this.options.version & 0x0f)) {
+        // Memory IO
+        switch(addr & ~0x1) {
+            case 0xa10002:
+            case 0xa10004:
+            case 0xa10006:
+                // Controller n data
+                this.ports[((addr & ~1) - 0xa10002) / 2].writeData(value, this.time);
+                return;
+            
+            case 0xa10008:
+            case 0xa1000a:
+            case 0xa1000c:
+                // Controller n control
+                this.ports[((addr & ~1) - 0xa10008) / 2].writeControl(value, this.time);
+                return;
+            
+            case 0xa11100:
+                // Z80 /BUSREQ
+                if(value & 0x0101) {
+                    this.z80.releaseBus();
+                }else{
+                    this.z80.acquireBus();
+                }
+                return;
+            
+            case 0xa11200:
+                // Z80 /RESET
+                if(value & 0x0101) {
+                    this.z80.stopReset();
+                }else{
+                    this.z80.startReset();
+                }
+                return;
+        }
+        
+        if(addr == 0xa14000 && (this.options.version & 0x0f)) {
             if(value == 0x5345) this._loCopy = true;
             this.copyProtected = this._loCopy && this._hiCopy;
             return;
