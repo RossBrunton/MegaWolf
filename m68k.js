@@ -482,6 +482,14 @@ export class M68k {
                 return true;
             }
             
+            case 0x4840: { // pea
+                log("> pea");
+                
+                this.registers[SP] -= 4;
+                this.emu.writeMemory32(this.registers[SP], this.addressEa(effectiveAddress, 4), 4);
+                return true;
+            }
+            
             case 0x4ec0: { // jmp
                 log("> jmp");
                 
@@ -507,8 +515,22 @@ export class M68k {
             let instruction2 = pcAndAdvance(2);
             if((instruction2 & 0xff00) == 0x0000) { // andi to ccr
                 log("> andi to ccr");
-                this.time += 12;
+                this.time += 16;
                 this.registers[CCR] &= (instruction2 | 0xff00);
+                return true;
+            }else{
+                console.error("Unknown opcode: 0x" + instruction.toString(16) + ":" + instruction2.toString(16) +
+                    " at 0x" + oldPc.toString(16));
+                return false;
+            }
+        }
+        
+        if(instruction == 0x003c) {
+            let instruction2 = pcAndAdvance(2);
+            if((instruction2 & 0xff00) == 0x0000) { // ori to ccr
+                log("> ori to ccr");
+                this.time += 16;
+                this.registers[CCR] |= (instruction2 & 0xff);
                 return true;
             }else{
                 console.error("Unknown opcode: 0x" + instruction.toString(16) + ":" + instruction2.toString(16) +
@@ -521,7 +543,7 @@ export class M68k {
             let instruction2 = pcAndAdvance(2);
             if((instruction2 & 0xff00) == 0x0000) { // eori to ccr
                 log("> andi to ccr");
-                this.time += 12;
+                this.time += 16;
                 this.registers[CCR] ^= (instruction2 & 0x00ff);
                 return true;
             }else{
@@ -531,9 +553,9 @@ export class M68k {
             }
         }
         
-        if(instruction == 0x027c || instruction == 0x0a7c) { // andi/eori to SR
-            log("> andi/eori to SR");
-            console.error("ANDI/EORI to SR not yet supported.");
+        if(instruction == 0x027c || instruction == 0x0a7c || instruction == 0x007c) { // andi/eori/ori to SR
+            log("> andi/eori/ori to SR");
+            console.error("ANDI/EORI/ORI to SR not yet supported.");
             return false;
         }
         
@@ -1482,6 +1504,42 @@ export class M68k {
             return true;
         }
         
+        if(instruction == 0x4e71) { // nop
+            log("> nop");
+            return true;
+        }
+        
+        if((instruction & 0xf600) == 0x4600) { // not
+            log("> not");
+            let [length, tmp] = getOperandLength(instruction, false);
+            let val = 0;
+            
+            if(effectiveAddress & 0b111000) {
+                // Memory location
+                let addr = this.addressEa(effectiveAddress, length);
+                val = this.emu.readMemoryN(addr, length);
+                
+                this.emu.writeMemoryN(addr, ~val, length);
+                this.time += 4;
+                if(length == 4) this.time += 4;
+            }else{
+                // Register
+                let val = this.registers[effectiveAddress] & lengthMask(length);
+                
+                this.registers[effectiveAddress] &= ~lengthMask(length);
+                this.registers[effectiveAddress] |= tmp[0];
+                
+                if(length == 4) this.time += 2;
+            }
+            
+            let ccr = this.registers[CCR] & X;
+            ccr |= val == 0 ? Z : 0;
+            ccr |= isNegative(val, length) ? N : 0;
+            this.registers[CCR] = ccr;
+            
+            return true;
+        }
+        
         if((instruction & 0xf000) == 0x6000) { // bcc/bra/bsr
             log("> bcc/bra/bsr");
             let condition = (instruction & 0x0f00) >> 8;
@@ -1532,6 +1590,12 @@ export class M68k {
             let destEa = (instruction & 0x0fc0) >> 6;
             destEa = (destEa >> 3) | ((destEa & 0b111) << 3);
             this.writeEa(destEa, val, length);
+            return true;
+        }
+        
+        if(instruction == 0x4e70) { // reset
+            log("> reset");
+            // Apparently this has no effect?
             return true;
         }
         
