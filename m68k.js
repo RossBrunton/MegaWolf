@@ -388,6 +388,12 @@ export class M68k {
                 return false;
             }
             
+            case 0xf800: { // nbcd
+                log("> nbcd");
+                console.error("NBCD not supported yet");
+                return false;
+            }
+            
             case 0x4a00:
             case 0x4a40:
             case 0x4a80: { // tst
@@ -445,7 +451,7 @@ export class M68k {
                 let reg = effectiveAddress & 0b111;
                 let init = this.registers[ABASE + reg];
                 let mask = this.pcAndAdvance(2);
-                this.time += 8;
+                this.time += 4;
                 for(let a = 0; a <= 15; a ++) {
                     if(mask & (1 << a)) {
                         if(15 - a == (ABASE + reg)) {
@@ -1218,6 +1224,49 @@ export class M68k {
             let ccr = this.registers[CCR] & X;
             ccr |= isNegative(this.registers[reg], 4) ? N : 0;
             ccr |= (this.registers[reg]) == 0 ? Z : 0;
+            this.registers[CCR] = ccr;
+            
+            return true;
+        }
+        
+        if((instruction & 0xf038) == 0x008) { // movep
+            log("> movep");
+            console.error("MOVEP not supported");
+        }
+        
+        if((instruction & 0xf1c0) == 0xc1c0) { // muls
+            log("> muls");
+            let register = (instruction >> 9) & 0b111;
+            this.time += 66;
+            
+            let a = makeSigned(this.readEa(effectiveAddress, 2));
+            let b = makeSigned(this.registers[register] & 0xffff, 2);
+            let result = a * b;
+            
+            this.registers[register] = result;
+            
+            let ccr = this.registers[CCR] & X;
+            ccr |= result == 0 ? Z : 0;
+            ccr |= result < 0 ? N : 0;
+            this.registers[CCR] = ccr;
+            
+            return true;
+        }
+        
+        if((instruction & 0xf1c0) == 0xc0c0) { // mulu
+            log("> mulu");
+            let register = (instruction >> 9) & 0b111;
+            this.time += 66;
+            
+            let a = this.readEa(effectiveAddress);
+            let b = this.registers[register] & 0xffff;
+            let result = a * b;
+            
+            this.registers[register] = result;
+            
+            let ccr = this.registers[CCR] & X;
+            ccr |= result == 0 ? Z : 0;
+            ccr |= (result & 0x80000000) ? N : 0;
             this.registers[CCR] = ccr;
             
             return true;
