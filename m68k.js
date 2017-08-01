@@ -404,6 +404,26 @@ export class M68k {
                 
                 return true;
             }
+            
+            case 0x4ec0: { // jmp
+                log("> jmp");
+                
+                this.registers[PC] = this.addressEa(effectiveAddress, 2);
+                this.time += 4;
+                return true;
+            }
+            
+            case 0x4e80: { // jsr
+                log("> jsr");
+                let addr = this.addressEa(effectiveAddress, 2);
+                
+                this.registers[SP] -= 4;
+                this.emu.writeMemory32(this.registers[SP], this.registers[PC]);
+                
+                this.registers[PC] = addr;
+                this.time += 12;
+                return true;
+            }
         }
         
         if(instruction == 0x023c) {
