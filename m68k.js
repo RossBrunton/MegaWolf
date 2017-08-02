@@ -158,7 +158,7 @@ let lengthMask = function(length) {
             return 0xff;
         case 2:
             return 0xffff;
-        case 3:
+        case 4:
             return 0xffffffff;
     }
 }
@@ -254,7 +254,9 @@ export class M68k {
             }
             
             case 0b011000: { // Address Register Indirect with Postincrement Mode
-                // TODO: This should be incremented/decremented by 2 if it's the SP
+                if((ea & 0b000111) == SP - ABASE && length == 1) {
+                    length = 2; // Need to keep the stack aligned
+                }
                 this.time += 4;
                 let toReturn = this.registers[ABASE + (ea & 0b000111)];
                 this.registers[ABASE + (ea & 0b000111)] += length;
@@ -262,6 +264,9 @@ export class M68k {
             }
             
             case 0b100000: { // Address Register Indirect with Predecrement Mode
+                if((ea & 0b000111) == SP - ABASE && length == 1) {
+                    length = 2; // Need to keep the stack aligned
+                }
                 this.time += 6;
                 this.registers[ABASE + (ea & 0b000111)] -= length;
                 return this.registers[ABASE + (ea & 0b000111)];
@@ -323,11 +328,11 @@ export class M68k {
     readEa(ea, length) {
         switch(ea & 0b111000) {
             case 0b000000: { // Data Register Direct Mode
-                return this.registers[DBASE + ea];
+                return this.registers[DBASE + ea] & lengthMask(length);
             }
             
             case 0b001000: { // Address Register Direct Mode
-                return this.registers[ABASE + (ea & 0b000111)];
+                return this.registers[ABASE + (ea & 0b000111)] & lengthMask(length);
             }
             
             case 0b111000: {
@@ -383,6 +388,30 @@ export class M68k {
                 console.error("GetImmediate failed to find an immediate value!");
                 return undefined;
         }
+    }
+    
+    // Get the properties of a shift/rotate operation
+    getShift(instruction) {
+        let cr = (instruction >> 9) & 0b111;
+        let left = (instruction & 0x0100) != 0;
+        let size = (instruction >> 6) & 0b11;
+        let register = (instruction & 0x0020) != 0;
+        let regNo = instruction & 0b111;
+        
+        if(register) {
+            cr = this.registers[cr] % 64;
+        }else{
+            if(cr == 0) cr = 8;
+        }
+        
+        let length = 1;
+        if(size == 0b01) {
+            length = 2;
+        }else if(size == 0b10) {
+            length = 4;
+        }
+        
+        return [cr, left, length, regNo];
     }
     
     start() {
@@ -701,7 +730,7 @@ export class M68k {
                     ea = this.readEa(effectiveAddress, length);
                 }
                 
-                let reg = this.registers[register];
+                let reg = this.registers[register] & lengthMask(length);
                 tmp[0] = ea;
                 tmp[0] += reg;
                 
@@ -713,7 +742,8 @@ export class M68k {
                     this.emu.writeMemoryN(eaAddr, tmp[0], length);
                 }else{
                     // Destination is register
-                    this.registers[register] = tmp[0];
+                    this.registers[register] &= ~lengthMask(length);
+                    this.registers[register] |= tmp[0];
                 }
             }
             
@@ -927,12 +957,11 @@ export class M68k {
         
         if((instruction & 0xf010) == 0xe000 || (instruction & 0xfec0) == 0xe2c0) { // asl/asr/lsl/lsr
             log("> asl/asr/lsl/lsr");
-            let cr = (instruction >> 9) & 0b111;
-            let left = (instruction & 0x0100) != 0;
             let size = (instruction >> 6) & 0b11;
             let register = (instruction & 0x0020) != 0;
-            let regNo = instruction & 0b111;
             let logical;
+            
+            let [cr, left, length, regNo] = this.getShift(instruction);
             
             if(size == 0b11) {
                 // Memory shift
@@ -976,13 +1005,6 @@ export class M68k {
                 
                 logical = (instruction & 0b1000) != 0;
                 
-                let length = 1;
-                if(size == 0b01) {
-                    length = 2;
-                }else if(size == 0b10) {
-                    length = 4;
-                }
-                
                 this.time += 2 + (2 * cr);
                 if(length == 4) this.time += 2;
                 
@@ -1007,7 +1029,7 @@ export class M68k {
                         }
                     }
                     
-                    this.registers[regNo] = (this.registers[regNo] & ~lengthMask(length)) & (value & lengthMask(length));
+                    this.registers[regNo] = (this.registers[regNo] & ~lengthMask(length)) | (value & lengthMask(length));
                     
                     let ccr = 0;
                     ccr |= xc ? (C | X) : 0;
@@ -1223,6 +1245,7 @@ export class M68k {
             tmp[0] -= immediate;
             
             this.registers[CCR] = this.subCcr(ea, immediate, tmp[0], length);
+            return true;
         }
         
         if((instruction & 0xf1c0) == 0x81c0) { // divs
@@ -1677,7 +1700,7 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xc000) == 0x0000 && (instruction & 0x3000)) { // move/mavea
+        if((instruction & 0xc000) == 0x0000 && (instruction & 0x3000)) { // move/movea
             log("> move/movea");
             let length = 1;
             if((instruction & 0x3000) == 0x3000) {
@@ -1686,17 +1709,22 @@ export class M68k {
                 length = 4;
             }
             
-            
             let val = this.readEa(effectiveAddress, length);
-            
-            let ccr = this.registers[CCR] & X;
-            ccr &= val == 0 ? Z : 0;
-            ccr &= isNegative(val, length) ? N : 0;
-            this.registers[CCR] = ccr;
-            
-            let destEa = (instruction & 0x0fc0) >> 6;
-            destEa = (destEa >> 3) | ((destEa & 0b111) << 3);
-            this.writeEa(destEa, val, length);
+            if(((instruction >> 6) & 0b111) == 0b001) {
+                // movea
+                val = makeSigned(val, length);
+                this.registers[(instruction >> 6) & 0b1111] = val;
+            }else{
+                // move
+                let ccr = this.registers[CCR] & X;
+                ccr &= val == 0 ? Z : 0;
+                ccr &= isNegative(val, length) ? N : 0;
+                this.registers[CCR] = ccr;
+                
+                let destEa = (instruction & 0x0fc0) >> 6;
+                destEa = (destEa >> 3) | ((destEa & 0b111) << 3);
+                this.writeEa(destEa, val, length);
+            }
             return true;
         }
         
@@ -1708,8 +1736,36 @@ export class M68k {
         
         if((instruction & 0xf018) == 0xe018) { // rol/ror (register)
             log("> rol/ror (register)");
-            console.error("ROL/ROR with register not implemented yet");
-            return false;
+            let [cr, left, length, regNo] = this.getShift(instruction);
+            
+            this.time += 2 + (2 * cr);
+            if(length == 4) this.time += 2;
+            
+            let value = this.registers[regNo] & lengthMask(length);
+            let tmp = 0;
+            
+            for(let i = 0; i < cr; i ++) {
+                if(left) {
+                    tmp = value >>> (length * 8 - 1);
+                    value <<= 1;
+                    value |= tmp;
+                }else{
+                    // Right
+                    tmp = value & 0b1;
+                    value >>>= 1;
+                    value |= (tmp << (length * 8 - 1));
+                }
+            }
+            
+            this.registers[regNo] = (this.registers[regNo] & ~lengthMask(length)) | (value & lengthMask(length));
+            
+            let ccr = this.registers[CCR] & X;
+            ccr |= tmp ? C : 0;
+            ccr |= isNegative(value, length) ? N : 0;
+            ccr |= value == 0 ? Z : 0;
+            this.registers[CCR] = ccr;
+            
+            return true;
         }
         
         if((instruction & 0xfec0) == 0xe6c0) { // rol/ror (memory)
@@ -1720,8 +1776,48 @@ export class M68k {
         
         if((instruction & 0xf018) == 0xe010) { // roxl/roxr (register)
             log("> roxl/roxr (register)");
-            console.error("ROXL/ROXR with register not implemented yet");
-            return false;
+            let [cr, left, length, regNo] = this.getShift(instruction);
+            
+            this.time += 2 + (2 * cr);
+            if(length == 4) this.time += 2;
+            
+            let value = this.registers[regNo] & lengthMask(length);
+            let tmp = 0;
+            let tmp2 = 0;
+            let x = (this.registers[CCR] & X) ? 1 : 0;
+            
+            for(let i = 0; i < cr; i ++) {
+                if(left) {
+                    tmp = x;
+                    x = value >>> (length * 8 - 1);
+                    value <<= 1;
+                    value |= tmp;
+                }else{
+                    // Right
+                    tmp = x;
+                    x = value & 0b1;
+                    value >>>= 1;
+                    value |= (tmp << (length * 8 - 1));
+                }
+            }
+            
+            this.registers[regNo] = (this.registers[regNo] & ~lengthMask(length)) | (value & lengthMask(length));
+            
+            if(cr == 0) {
+                let ccr = this.registers[CCR] & X;
+                ccr |= ccr ? C : 0; // Set to the value of the extend bit
+                ccr |= isNegative(value, length) ? N : 0;
+                ccr |= value == 0 ? Z : 0;
+                this.registers[CCR] = ccr;
+            }else{
+                let ccr = 0;
+                ccr |= x ? (C | X) : 0;
+                ccr |= isNegative(value, length) ? N : 0;
+                ccr |= value == 0 ? Z : 0;
+                this.registers[CCR] = ccr;
+            }
+            
+            return true;
         }
         
         if((instruction & 0xfec0) == 0xe4c0) { // roxl/roxr (memory)
@@ -1769,13 +1865,26 @@ export class M68k {
             
             let condition = (instruction & 0x0f00) >> 8;
             
-            this.readEa(effectiveAddress, 1); // "A memory address is read before it is written"
-            if(doCondition(condition, this.registers[CCR])) {
-                this.writeEa(effectiveAddress, 0xff, 1);
-                if(!(effectiveAddress & 0b111000)) this.time += 2;
+            if(effectiveAddress & 0b111000) {
+                // Memory
+                let addr = this.addressEa(effectiveAddress, 1);
+                this.emu.readMemory8(addr, 1); // "A memory address is read before it is written"
+                if(doCondition(condition, this.registers[CCR])) {
+                    this.emu.writeMemory8(addr, 0xff, 1);
+                }else{
+                    this.emu.writeMemory8(addr, 0x00, 1);
+                }
+                this.time += 8;
             }else{
-                this.writeEa(effectiveAddress, 0x00, 1);
+                // Register
+                if(doCondition(condition, this.registers[CCR])) {
+                    this.writeEa(effectiveAddress, 0xff, 1);
+                    this.time += 2;
+                }else{
+                    this.writeEa(effectiveAddress, 0x00, 1);
+                }
             }
+            
             
             return true;
         }
