@@ -4,6 +4,13 @@ let u8 = new Uint8Array(1);
 let u16 = new Uint16Array(1);
 let u32 = new Uint32Array(1);
 
+const DEBUG = true;
+let log = function(msg) {
+    if(DEBUG) {
+        console.log("[z80] "+msg);
+    }
+}
+
 export class Z80 {    
     constructor(emulator) {
         this.emu = emulator;
@@ -15,22 +22,22 @@ export class Z80 {
     }
     
     releaseBus() {
-        console.log("[Z80] Releasing bus");
+        log("Releasing bus");
         this.emu.m68kOwnBus = true;
     }
     
     acquireBus() {
-        console.log("[Z80] Acquiring bus");
+        log("Acquiring bus");
         this.emu.m68kOwnBus = false;
     }
     
     startReset() {
-        console.log("[Z80] Starting reset");
+        log("Starting reset");
         this.reset = true;
     }
     
     stopReset() {
-        console.log("[Z80] Stopping reset");
+        log("Stopping reset");
         this.reset = false;
     }
     

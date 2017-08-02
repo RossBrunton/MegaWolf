@@ -4,10 +4,18 @@ import {M68k} from "./m68k.js";
 import {Z80} from "./z80.js";
 import {Controller} from "./controller.js";
 
+export const NTSC = "ntsc";
+export const PAL = "pal";
+
+const NTSC_CLOCK = 7670453;
+const PAL_CLOCK = 7600489;
+
+const FPS = 60;
+
 const DEBUG = false;
 let log = function(msg) {
     if(DEBUG) {
-        console.log(msg);
+        console.log("[emulator] "+msg);
     }
 }
 
@@ -16,6 +24,9 @@ export class Emulator {
         this.options = options ? options : {};
         if(this.options.version === undefined) {
             this.options.version = 0xa0a0;
+        }
+        if(this.options.region === undefined) {
+            this.options.region = "ntsc";
         }
         
         this.mainRam = new DataView(new ArrayBuffer(1024*64));
@@ -43,7 +54,7 @@ export class Emulator {
         log("Memory read at 0x"+addr.toString(16));
         addr &= 0x00ffffff;
         
-        if(addr < 0x3fffff) {
+        if(addr <= 0x3fffff) {
             // ROM
             return this.rom.getUint16(addr, false);
         }
@@ -139,10 +150,31 @@ export class Emulator {
     }
     
     readMemory8(addr) {
+        addr &= 0x00ffffff;
+        
+        if(addr <= 0x3fffff) {
+            // ROM
+            console.log("8 rom read " + addr.toString(16));
+            return this.rom.getUint8(addr, false);
+        }
+        
+        if(addr > 0xe00000) {
+            // Main RAM
+            return this.mainRam.getUint8(addr & 0x00ffff, false);
+        }
+        
         return this.readMemory(addr) >> 8;
     }
     
     writeMemory8(addr, value) {
+        addr &= 0x00ffffff;
+        
+        if(addr > 0xe00000) {
+            // Main RAM
+            this.mainRam.setUint8(addr & 0x00ffff, value, false);
+            return;
+        }
+        
         return this.writeMemory(addr, value & 0xff);
     }
     
@@ -191,5 +223,29 @@ export class Emulator {
         }
         
         return true;
+    }
+    
+    runTime(factor) {
+        this.running = true;
+        
+        if(this.options.region == PAL) {
+            this.time += ~~((PAL_CLOCK / FPS) * factor);
+        }else{
+            this.time += ~~((NTSC_CLOCK / FPS) * factor);
+        }
+        
+        //console.log("Delta: " + (this.time - this.m68k.time));
+        
+        while(this.m68k.time < this.time) {
+            let ret = this.m68k.doInstruction();
+            
+            if(!ret) {
+                console.log("Emulator stopping...");
+                this.running = false;
+                return;
+            }
+        }
+        
+        requestAnimationFrame(this.runTime.bind(this, factor));
     }
 }
