@@ -2,6 +2,7 @@
 export const SP = 15;
 export const PC = 16;
 export const CCR = 17;
+export const SR = 18;
 export const DBASE = 0;
 export const ABASE = 8;
 
@@ -21,6 +22,12 @@ export const Z = 0x0004; // Zero
 export const N = 0x0008; // Negative
 export const X = 0x0010; // Extend
 
+export const I0 = 0x0100; // Interrupt priority mask 1
+export const I1 = 0x0200; // Interrupt priority mask 2
+export const I2 = 0x0400; // Interrupt priority mask 3
+export const S = 0x2000; // Supervisor
+export const T = 0x8000; // Trace //TODO: Implement this
+
 let u8 = new Uint8Array(1);
 let u16 = new Uint16Array(1);
 let u32 = new Uint32Array(1);
@@ -28,7 +35,7 @@ let u32 = new Uint32Array(1);
 const DEBUG = false;
 let log = function(msg) {
     if(DEBUG) {
-        console.log(msg);
+        console.log("[m68k] " + msg);
     }
 }
 
@@ -158,7 +165,9 @@ let lengthMask = function(length) {
 
 export class M68k {
     constructor(emulator) {
-        this.registers = new Uint32Array(18);
+        this.registers = new Uint32Array(19);
+        
+        this.registers[SR] = S;
         
         this.emu = emulator;
         this.time = 0;
@@ -385,6 +394,7 @@ export class M68k {
     changeMode(mode) {
         let oldMode = this.mode;
         this.mode = mode;
+        console.log("Mode change " + oldMode + " -> " + this.mode);
         
         if((this.mode == USER && oldMode == SUPER) || (this.mode == SUPER && oldMode == USER)) {
             let tmp = this.oldSp;
@@ -421,16 +431,36 @@ export class M68k {
             
             case 0x40c0: { // move from sr
                 log("> move from sr");
+                let val = this.registers[SR] | this.registers[CCR];
                 
-                console.error("MOVE from SR not yet implemented");
-                return false;
+                if(effectiveAddress & 0b111000) {
+                    // Memory
+                    let addr = this.addressEa(val, 2);
+                    this.emu.readMemory(addr);
+                    this.emu.writeMemory(addr, val);
+                    this.time += 4;
+                }else{
+                    // Register
+                    this.registers[effectiveAddress] &= 0xffff0000;
+                    this.registers[effectiveAddress] |= val;
+                    this.time += 2;
+                }
+                return true;
             }
             
             case 0x46c0: { // move to sr
                 log("> move to sr");
-                
-                console.error("MOVE to SR not yet implemented");
-                return false;
+                if(this.mode != SUPER) {
+                    this.trap(EX_PRIV_VIO);
+                }else{
+                    let val = this.readEa(effectiveAddress, 2);
+                    
+                    this.registers[CCR] = val & 0x00ff;
+                    this.registers[SR] = val & 0xff00;
+                    this.changeMode((val & S) ? SUPER : USER);
+                    this.time += 8;
+                }
+                return true;
             }
             
             case 0xf800: { // nbcd
@@ -614,8 +644,24 @@ export class M68k {
         
         if(instruction == 0x027c || instruction == 0x0a7c || instruction == 0x007c) { // andi/eori/ori to SR
             log("> andi/eori/ori to SR");
-            console.error("ANDI/EORI/ORI to SR not yet supported.");
-            return false;
+            let op = this.pcAndAdvance(2);
+            if(this.mode != SUPER) {
+                this.trap(EX_PRIV_VIO);
+            }else{
+                let val = this.registers[SR] | this.registers[CCR];
+                
+                switch(instruction) {
+                    case 0x027c: val &= tmp; break; // andi
+                    case 0x0a7c: val ^= tmp; break; // eori
+                    case 0x007c: val |= tmp; break; // ori;
+                }
+                
+                this.registers[CCR] = val & 0x00ff;
+                this.registers[SR] = val & 0xff00;
+                this.changeMode((val & S) ? SUPER : USER);
+                this.time += 16;
+            }
+            return true;
         }
         
         if((instruction & 0xf1f0) == 0xc100) { // abcd
@@ -879,7 +925,8 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xf000) == 0xe000) { // asl/asr/lsl/lsr
+        if((instruction & 0xf010) == 0xe000 || (instruction & 0xfec0) == 0xe2c0) { // asl/asr/lsl/lsr
+            log("> asl/asr/lsl/lsr");
             let cr = (instruction >> 9) & 0b111;
             let left = (instruction & 0x0100) != 0;
             let size = (instruction >> 6) & 0b11;
@@ -1659,7 +1706,7 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xf00c) == 0xe00c) { // rol/ror (register)
+        if((instruction & 0xf018) == 0xe018) { // rol/ror (register)
             log("> rol/ror (register)");
             console.error("ROL/ROR with register not implemented yet");
             return false;
@@ -1671,7 +1718,7 @@ export class M68k {
             return false;
         }
         
-        if((instruction & 0xf00c) == 0xe008) { // roxl/roxr (register)
+        if((instruction & 0xf018) == 0xe010) { // roxl/roxr (register)
             log("> roxl/roxr (register)");
             console.error("ROXL/ROXR with register not implemented yet");
             return false;
