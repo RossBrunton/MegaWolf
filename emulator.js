@@ -58,6 +58,11 @@ export class Emulator {
         
         if(addr <= 0x3fffff) {
             // ROM
+            if(addr > this.rom.byteLength) {
+                console.error("Out of bounds ROM read");
+                debugger;
+                return;
+            }
             return this.rom.getUint16(addr, false);
         }
         
@@ -284,6 +289,7 @@ export class Emulator {
                 return;
             }
         }
+            this.m68k.updateSpans();
         
         requestAnimationFrame(this.runTime.bind(this, factor));
     }

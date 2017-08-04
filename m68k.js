@@ -81,6 +81,11 @@ let doCondition = function(condition, value) {
         case 0b1110:
             // GT (N && V && ¬Z || ¬N && ¬V && ¬Z)
             return (((value & N) && (value & V)) || ((value & (N | V)) == 0)) && (value & Z) == 0;
+        
+        default:
+            console.error("Invalid condition!");
+            debugger;
+            return;
     }
 }
 
@@ -379,6 +384,7 @@ export class M68k {
                     return addr;
                 }else{
                     console.error("Unknown Effective Address mode: 0b" + ea.toString(2));
+                    debugger;
                 }
                 
                 return next;
@@ -386,6 +392,7 @@ export class M68k {
             
             default:
                 console.error("Unknown Effective Address mode: 0b" + ea.toString(2));
+                debugger;
                 return 0x0;
         }
     }
@@ -514,6 +521,7 @@ export class M68k {
                 return [4, immediate, u32];
             default:
                 console.error("GetImmediate failed to find an immediate value!");
+                debugger;
                 return undefined;
         }
     }
@@ -667,57 +675,7 @@ export class M68k {
                 return true;
             }
             
-            case 0x4c80:
-            case 0x4cc0: { // movem (mem to register)
-                this.log("> movem (to registers)");
-                let length = 2;
-                if(noEffectiveAddress == 0x4cc0) {
-                    length = 4;
-                }
-                
-                let mask = this.pcAndAdvance(2);
-                this.time += 8;
-                for(let a = 0; a <= 15; a ++) {
-                    if(mask & (1 << a)) {
-                        let val = this.readEa(effectiveAddress, length);
-                        if(length == 2) {
-                            this.registers[a] &= ~lengthMask(2);
-                            this.registers[a] |= val;
-                        }else{
-                            this.registers[a] = val;
-                        }
-                    }
-                }
-                
-                return true;
-            }
-            
-            case 0x4880:
-            case 0x48c0: { // movem (register to mem)
-                this.log("> movem (to memory)");
-                let length = 2;
-                if(noEffectiveAddress == 0x48c0) {
-                    length = 4;
-                }
-                
-                let reg = effectiveAddress & 0b111;
-                let init = this.registers[ABASE + reg];
-                let mask = this.pcAndAdvance(2);
-                this.time += 4;
-                for(let a = 0; a <= 15; a ++) {
-                    if(mask & (1 << a)) {
-                        if(15 - a == (ABASE + reg)) {
-                            this.writeEa(effectiveAddress, init, length);
-                        }else{
-                            this.writeEa(effectiveAddress, this.registers[15 - a], length);
-                        }
-                    }
-                }
-                
-                return true;
-            }
-            
-            case 0x48c0: { // tas
+            case 0x4ac0: { // tas
                 this.log("> tas");
                 
                 if(effectiveAddress & 0b111000) {
@@ -745,14 +703,6 @@ export class M68k {
                 }
                 
                 
-                return true;
-            }
-            
-            case 0x4840: { // pea
-                this.log("> pea");
-                
-                this.registers[SP] -= 4;
-                this.emu.writeMemory32(this.registers[SP], this.addressEa(effectiveAddress, 4), 4);
                 return true;
             }
             
@@ -988,8 +938,8 @@ export class M68k {
             return false;
         }
         
-        if((instruction & 0xf000) == 0xc000 || (instruction & 0xf100) == 0xb100 
-        || (instruction & 0xf000) == 0x8000) { // and/eor/or
+        if(((instruction & 0xf000) == 0xc000 || (instruction & 0xf100) == 0xb100 
+        || (instruction & 0xf000) == 0x8000) && (instruction & 0x01c0) != 0x01c0) { // and/eor/or
             this.log("> and/eor/or");
             let register = (instruction >> 9) & 0b111;
             let opmode = (instruction >> 6) & 0b111;
@@ -1201,19 +1151,20 @@ export class M68k {
         }
         
         if((instruction & 0xf100) == 0x0100 || (instruction & 0xff00) == 0x0800) { // btst/bchg/bclr/bset
-            this.log("> btst/bchg/bclr/bset");
-            
-            let chg = (instruction & 0x0040) != 0;
-            let clr = (instruction & 0x0080) != 0;
-            let set = (instruction & 0x00c0) != 0;
+            let chg = (instruction & 0x00c0) == 0x0040;
+            let clr = (instruction & 0x00c0) == 0x0080;
+            let set = (instruction & 0x00c0) == 0x00c0;
             
             let bitNo;
-            if((instruction & 0xffc0) == 0x0800) {
+            let rstr = "";
+            if(!(instruction & 0x0100)) {
                 // Immediate
                 bitNo = this.pcAndAdvance(1);
+                rstr = "#$"+bitNo.toString(16);
             }else{
                 // Register
                 bitNo = this.registers[(instruction >> 9) & 0b111];
+                rstr = "r"+((instruction >> 9) && 0b111);
             }
             
             let mask;
@@ -1255,6 +1206,17 @@ export class M68k {
             ccr &= ~Z;
             ccr |= (value & mask) ? 0 : Z;
             this.registers[CCR] = ccr;
+            
+            let name = "btst";
+            if(chg) {
+                name = "bchg";
+            }else if(clr) {
+                name = "bclr";
+            }else if(set) {
+                name = "bset";
+            }
+            
+            this.log("> "+name+" "+rstr+","+this.eaStr(effectiveAddress, 1, oldPc));
             
             return true;
         }
@@ -1386,7 +1348,6 @@ export class M68k {
         }
         
         if((instruction & 0xff00) == 0x0c00) { // cmpi
-            this.log("> cmpi");
             let [length, immediate, tmp] = this.getImmediate(instruction);
             
             if(length == 4 && (effectiveAddress & 0b111000) == 0) {
@@ -1398,6 +1359,10 @@ export class M68k {
             tmp[0] -= immediate;
             
             this.registers[CCR] = this.subCcr(ea, immediate, tmp[0], length);
+            
+            this.log("> cmpi" + lengthString(length) +
+                " #$"+immediate.toString(16) + "," + this.eaStr(effectiveAddress, length, oldPc));
+            
             return true;
         }
         
@@ -1483,7 +1448,7 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xffb8) == 0x4c00) { // ext
+        if((instruction & 0xffb8) == 0x4880) { // ext
             this.log("> ext");
             let reg = instruction & 0b111;
             let dat = 0;
@@ -1648,6 +1613,14 @@ export class M68k {
                 if(length == 4) this.time += 2;
             }
             
+            return true;
+        }
+        
+        if((instruction & 0xffc0) == 0x4840 && (instruction & 0x001c)) { // pea
+            this.log("> pea");
+            
+            this.registers[SP] -= 4;
+            this.emu.writeMemory32(this.registers[SP], this.addressEa(effectiveAddress, 4), 4);
             return true;
         }
         
@@ -1897,6 +1870,54 @@ export class M68k {
             return true;
         }
         
+        if((instruction & 0xff80) == 0x4c80 && (instruction & 0x001c)) { // movem (mem to register)
+            this.log("> movem (to registers)");
+            let length = 2;
+            if(noEffectiveAddress == 0x4cc0) {
+                length = 4;
+            }
+            
+            let mask = this.pcAndAdvance(2);
+            this.time += 8;
+            for(let a = 0; a <= 15; a ++) {
+                if(mask & (1 << a)) {
+                    let val = this.readEa(effectiveAddress, length);
+                    if(length == 2) {
+                        this.registers[a] &= ~lengthMask(2);
+                        this.registers[a] |= val;
+                    }else{
+                        this.registers[a] = val;
+                    }
+                }
+            }
+            
+            return true;
+        }
+        
+        if((instruction & 0xff80) == 0x4880 && (instruction & 0x001c)) { // movem (register to mem)
+            this.log("> movem (to memory)");
+            let length = 2;
+            if(noEffectiveAddress == 0x48c0) {
+                length = 4;
+            }
+            
+            let reg = effectiveAddress & 0b111;
+            let init = this.registers[ABASE + reg];
+            let mask = this.pcAndAdvance(2);
+            this.time += 4;
+            for(let a = 0; a <= 15; a ++) {
+                if(mask & (1 << a)) {
+                    if(15 - a == (ABASE + reg)) {
+                        this.writeEa(effectiveAddress, init, length);
+                    }else{
+                        this.writeEa(effectiveAddress, this.registers[15 - a], length);
+                    }
+                }
+            }
+            
+            return true;
+        }
+        
         if(instruction == 0x4e70) { // reset
             this.log("> reset");
             // Apparently this has no effect?
@@ -2134,5 +2155,11 @@ export class M68k {
         }
         
         return true;
+    }
+    
+    updateSpans() {
+        for(let i = 0; i <= 17; i ++) {
+            document.querySelector("#r"+i).innerHTML = this.registers[i].toString(16);
+        }
     }
 }

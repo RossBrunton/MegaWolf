@@ -12,9 +12,28 @@
         <input type='file'>
         <input type='submit' value='Load ROM'>
     </form>
-    <button onclick='emulator.doInstruction()'>Run Instruction</button>
-    <button onclick='emulator.doUntilFail(10000);'>Run Until Fail</button>
     
+    <br/>d0: 0x<span id='r0'></span>
+    <br/>d1: 0x<span id='r1'></span>
+    <br/>d2: 0x<span id='r2'></span>
+    <br/>d3: 0x<span id='r3'></span>
+    <br/>d4: 0x<span id='r4'></span>
+    <br/>d5: 0x<span id='r5'></span>
+    <br/>d6: 0x<span id='r6'></span>
+    <br/>d7: 0x<span id='r7'></span>
+    <br/>
+    <br/>a0: 0x<span id='r8'></span>
+    <br/>a1: 0x<span id='r9'></span>
+    <br/>a2: 0x<span id='r10'></span>
+    <br/>a3: 0x<span id='r11'></span>
+    <br/>a4: 0x<span id='r12'></span>
+    <br/>a5: 0x<span id='r13'></span>
+    <br/>a6: 0x<span id='r14'></span>
+    <br/>a7: 0x<span id='r15'></span>
+    <br/>
+    <br/>ccr: 0x<span id='r17'></span>
+    <br/>pc: 0x<span id='r16'></span>
+    <br/>
     <canvas width=518 height=256></canvas>
 </body>
 
