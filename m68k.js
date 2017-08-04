@@ -77,7 +77,7 @@ let doCondition = function(condition, value) {
             return ((value & N) && (value & V)) || ((value & (N | V)) == 0);
         case 0b1101:
             // LT (N && ¬V || ¬N && V)
-            return ((value & N) && (value & V) == 0) || ((value & N) == 0 && value & V);
+            return ((value & N) && (value & V) == 0) || ((value & N) == 0 && (value & V));
         case 0b1110:
             // GT (N && V && ¬Z || ¬N && ¬V && ¬Z)
             return (((value & N) && (value & V)) || ((value & (N | V)) == 0)) && (value & Z) == 0;
@@ -105,6 +105,35 @@ let getOperandLength = function(instruction, allowAddress) {
         case 0b110:
         case 0b111:
             return [4, u32];
+    }
+}
+
+let lengthString = function(l) {
+    switch(l) {
+        case 1: return ".b";
+        case 2: return ".w";
+        case 4: return ".l";
+        default: return ".?";
+    }
+}
+
+let conditionStr = function(condition) {
+    switch(condition) {
+        case 0b0000: return "t";
+        case 0b0001: return "f";
+        case 0b0010: return "hi";
+        case 0b0011: return "ls";
+        case 0b0100: return "cc";
+        case 0b0101: return "cs";
+        case 0b0110: return "ne";
+        case 0b0111: return "eq";
+        case 0b1000: return "vc";
+        case 0b1001: return "vs";
+        case 0b1010: return "pl";
+        case 0b1011: return "mi";
+        case 0b1100: return "ge";
+        case 0b1101: return "lt";
+        case 0b1110: return "gt";
     }
 }
 
@@ -139,8 +168,9 @@ let addCcr = function(a, b, result, length) {
     }
     
     // Overflow
-    if(a & b & (1 << ((length * 8) - 1)) || ~a & ~b & (1 << ((length * 8) - 1))) {
-        if(!(a & result & (1 << ((length * 8) - 1)))) {
+    let highBitMask = 1 << ((length * 8) - 1)
+    if((a & b & highBitMask) || (~a & ~b & highBitMask)) {
+        if((a & highBitMask) != (result & highBitMask)) {
             ccr |= V;
         }
     }
@@ -254,6 +284,11 @@ export class M68k {
         let scale = 1 << ((word >> 9) & 0b11);
         let displacement = makeSigned(word & 0xff, 1);
         
+        if(word & 0x0100) {
+            console.log("Complicated extension word, help!");
+            debugger;
+        }
+        
         return [reg, long, scale, displacement];
     }
     
@@ -297,23 +332,32 @@ export class M68k {
                 this.time += 2;
                 
                 let addr = this.registers[ABASE + (ea & 0b000111)];
-                addr += displacement;
-                addr += this.registers[reg] * scale;
+                addr += makeSigned(displacement, 1);
+                if(long) {
+                    addr += makeSigned(this.registers[reg], 4) * scale;
+                }else{
+                    addr += makeSigned(this.registers[reg] & 0xffff, 2) * scale;
+                }
                 return addr;
             }
             
             case 0b111000: {
                 let next = 0;
                 
-                if(ea == 0b111001 || ea == 0b111000) { // Absolute long/short
+                if(ea == 0b111000) { // Absolute short
                     this.time += 8;
-                    next = this.emu.readMemory(this.registers[PC]);
-                    this.registers[PC] += 2;
+                    next = this.pcAndAdvance(2);
+                    if(isNegative(next, 2)) {
+                        next |= 0xffff0000;
+                        next >>>= 0;
+                    }
+                }else if(ea == 0b111001) { // Absolute long
+                    this.time += 8;
+                    next = this.pcAndAdvance(2);
                     if(ea == 0b111001) {
                         this.time += 4;
                         next <<= 16;
-                        next |= this.emu.readMemory(this.registers[PC]);
-                        this.registers[PC] += 2;
+                        next |= this.pcAndAdvance(2);
                     }
                 }else if(ea == 0b111010) { // PC indirect with displacement mode
                     this.time += 8;
@@ -327,10 +371,12 @@ export class M68k {
                     this.time += 2;
                     
                     addr += displacement;
-                    addr += this.registers[reg] * scale;
+                    if(long) {
+                        addr += makeSigned(this.registers[reg], 4) * scale;
+                    }else{
+                        addr += makeSigned(this.registers[reg] & 0xffff, 2) * scale;
+                    }
                     return addr;
-                }else if(ea == 0b111100) { // Immediate Data
-                    return this.pcAndAdvance(length);
                 }else{
                     console.error("Unknown Effective Address mode: 0b" + ea.toString(2));
                 }
@@ -366,6 +412,7 @@ export class M68k {
             
             default:
                 // Try if it's an address specifier
+                if(length == 4) this.time += 4;
                 return this.emu.readMemoryN(this.addressEa(ea, length), length);
         }
     }
@@ -389,6 +436,67 @@ export class M68k {
                 this.emu.writeMemoryN(this.addressEa(ea, length), value, length);
                 return;
             }
+        }
+    }
+    
+    eaStr(ea, length, pc) {
+        switch(ea & 0b111000) {
+            case 0b000000: { // Data register
+                return "d" + ea;
+            }
+            
+            case 0b001000: { // Address register
+                return "a" + (ea & 0b000111);
+            }
+            
+            case 0b010000: { // Address Register Indirect
+                return "(a"+(ea & 0b000111)+")";
+            }
+            
+            case 0b011000: { // Address Register Indirect with Postincrement Mode
+                return "(a"+(ea & 0b000111)+")+";
+            }
+            
+            case 0b100000: { // Address Register Indirect with Predecrement Mode
+                return "-(a"+(ea & 0b000111)+")";
+            }
+            
+            case 0b101000: { // Address Register Indirect with Displacement Mode
+                return "($"+this.emu.readMemory(pc + 2).toString(16)+", a"+(ea & 0b000111)+")";
+            }
+            
+            case 0b110000: { // Address Register Indirect with Index (8-Bit Displacement) Mode
+                return "(a"+(ea & 0b000111)+
+                    " indirect with index ext 0x"+this.emu.readMemory(pc + 2).toString(16)+")";
+            }
+            
+            case 0b111000: {
+                let next = 0;
+                
+                if(ea == 0b111000) { // Absolute short
+                    let next = this.emu.readMemory(pc + 2);
+                    if(isNegative(next, 2)) {
+                        next |= 0xffff0000;
+                        next >>>= 0;
+                    }
+                    return "(#$"+next.toString(16)+").w";
+                }else if(ea == 0b111001) { // Absolute long
+                    return "(#$"+this.emu.readMemory32(pc + 2).toString(16)+").l";
+                }else if(ea == 0b111010) { // PC indirect with displacement mode
+                    return "($"+this.emu.readMemory(pc + 2).toString(16)+", pc)";
+                }else if(ea == 0b111011) { // Program Counter Indirect with Index (8-Bit Displacement) Mode
+                    return "(pc indirect with index ext 0x"+this.emu.readMemory(pc + 2).toString(16)+")";
+                }else if(ea == 0b111100) { // Immediate Data
+                    return "$#"+this.emu.readMemoryN(pc + 2, length).toString(16)
+                }else{
+                    console.error("Unknown Effective Address mode: 0b" + ea.toString(2));
+                }
+                
+                return next;
+            }
+            
+            default:
+                return "??";
         }
     }
     
@@ -521,8 +629,6 @@ export class M68k {
             case 0x4a00:
             case 0x4a40:
             case 0x4a80: { // tst
-                this.log("> tst");
-                
                 let length = 1;
                 if(noEffectiveAddress == 0x4a40) {
                     length = 2;
@@ -531,6 +637,8 @@ export class M68k {
                 }
                 
                 let val = this.readEa(effectiveAddress, length);
+                
+                this.log("> tst"+lengthString(length) + " "+this.eaStr(effectiveAddress, length, oldPc));
                 
                 let ccr = this.registers[CCR] & X;
                 ccr |= val == 0 ? Z : 0;
@@ -770,8 +878,8 @@ export class M68k {
             return true;
         }
         
-        if((instruction & 0xff00) == 0x0600 || (instruction & 0xf100) == 0x5000) { // addi/addq
-            this.log("> addi/addq");
+        if((instruction & 0xff00) == 0x0600
+        || ((instruction & 0xf100) == 0x5000 && (instruction & 0x00c0) != 0x00c0)) { // addi/addq
             
             let length = 0;
             let immediate = 0;
@@ -841,6 +949,14 @@ export class M68k {
                 this.registers[CCR] = addCcr(immediate, ea, tmp[0], length);
                 
                 this.emu.writeMemoryN(addr, tmp[0], length);
+            }
+            
+            if(q) {
+                this.log("> addq"+lengthString(length)+
+                    " #$"+immediate.toString(16)+","+this.eaStr(effectiveAddress, length, oldPc));
+            }else{
+                this.log("> addi"+lengthString(length)+
+                    " #$"+immediate.toString(16)+","+this.eaStr(effectiveAddress, length, oldPc));
             }
             
             return true;
@@ -920,7 +1036,6 @@ export class M68k {
                 if((instruction & 0xf000) == 0xb000) {
                     // eor
                     console.error("Tried to write the result of an eor to non EA destination.");
-                    debugger;
                     return false;
                 }
             }
@@ -948,8 +1063,8 @@ export class M68k {
                 this.registers[effectiveAddress] |= val;
                 
                 let ccr = this.registers[CCR] & X;
-                ccr |= isNegative(this.registers[effectiveAddress], length) ? N : 0;
-                ccr |= (this.registers[effectiveAddress]) == 0 ? Z : 0;
+                ccr |= isNegative(val, length) ? N : 0;
+                ccr |= val == 0 ? Z : 0;
                 this.registers[CCR] = ccr;
                 
                 if(length == 4) this.time += 4;
@@ -1030,8 +1145,8 @@ export class M68k {
                 
                 if(cr) {
                     if(left) {
-                        xc = (value & (0x1 << ((length * 8) - 1) >> (cr - 1))) != 0;
-                        let vmask = lengthMask(length) & ~(lengthMask(length) >> cr);
+                        xc = (value & (0x1 << ((length * 8) - 1) >>> (cr - 1))) != 0;
+                        let vmask = lengthMask(length) & ~(lengthMask(length) >>> cr);
                         v = !((value & vmask) == vmask || (value & vmask) == 0);
                         value <<= cr;
                     }else{
@@ -1125,24 +1240,26 @@ export class M68k {
         }
         
         if((instruction & 0xf0f8) == 0x50c8) { // dbcc
-            this.log("> dbcc");
             let reg = instruction & 0b111;
             let condition = (instruction >> 8) & 0b1111;
             let displacement = this.pcAndAdvance(2);
             
             this.time += 6;
             
+            this.log("> db"+conditionStr(condition) + " d" + reg + ",#$" + makeSigned(displacement, 2).toString(16));
+            
             if(!doCondition(condition, this.registers[CCR])) {
                 let newVal = (this.registers[reg] & 0x0000ffff) - 1;
                 this.registers[reg] = (this.registers[reg] & 0xffff0000) | (newVal & 0x0000ffff);
                 if(newVal != -1) {
-                    this.log("Continuing loop");
                     this.registers[PC] = oldPc + makeSigned(displacement, 2) + 2;
+                    this.log("Continuing loop to 0x" + this.registers[PC].toString(16));
                     this.time -= 4;
                 }else{
                     this.time -= 2;
                 }
             }
+            
             return true;
         }
         
@@ -1380,7 +1497,7 @@ export class M68k {
         if((instruction & 0xf1c0) == 0x41c0) { // lea
             this.log("> lea");
             // TODO: Use only supported modes
-            let reg = (instruction & 0x0e00) >> 9;
+            let reg = (instruction & 0x0e00) >>> 9;
             this.registers[ABASE + reg] = this.addressEa(effectiveAddress, 4);
             return true;
         }
@@ -1572,9 +1689,8 @@ export class M68k {
             return false;
         }
         
-        if((instruction & 0xff00) == 0x0400 || (instruction & 0xf100) == 0x5100) { // subi/subq
-            this.log("> subi/subq");
-            
+        if((instruction & 0xff00) == 0x0400
+        || ((instruction & 0xf100) == 0x5100 && (instruction & 0x00c0) != 0x00c0)) { // subi/subq
             let length = 0;
             let immediate = 0;
             let tmp;
@@ -1646,6 +1762,14 @@ export class M68k {
                 this.emu.writeMemoryN(addr, tmp[0], length);
             }
             
+            if(q) {
+                this.log("> subq"+lengthString(length)+
+                    " #$"+immediate.toString(16)+","+this.eaStr(effectiveAddress, length, oldPc));
+            }else{
+                this.log("> subi"+lengthString(length)+
+                    " #$"+immediate.toString(16)+","+this.eaStr(effectiveAddress, length, oldPc));
+            }
+            
             return true;
         }
         
@@ -1686,8 +1810,7 @@ export class M68k {
         }
         
         if((instruction & 0xf000) == 0x6000) { // bcc/bra/bsr
-            this.log("> bcc/bra/bsr");
-            let condition = (instruction & 0x0f00) >> 8;
+            let condition = (instruction & 0x0f00) >>> 8;
             let displacement = instruction & 0x00ff;
             let bsr = condition == 0b001;
             
@@ -1698,9 +1821,13 @@ export class M68k {
                 displacement = makeSigned(displacement, 1);
             }
             
+            if(bsr) {
+                this.log("> bsr #$" + displacement.toString(16));
+            }else{
+                this.log("> b"+conditionStr(condition) + " #$" + displacement.toString(16));
+            }
+            
             if(!condition || bsr || doCondition(condition, this.registers[CCR])) {
-                this.log("Performing branch");
-                
                 if(bsr) {
                     this.registers[SP] -= 4;
                     this.emu.writeMemory32(this.registers[SP], this.registers[PC]);
@@ -1710,6 +1837,8 @@ export class M68k {
                 }
                 
                 this.registers[PC] = oldPc + displacement + 2;
+                
+                this.log("Performing branch to 0x" + this.registers[PC].toString(16));
             }else{
                 this.time += 4;
             }
@@ -1717,7 +1846,6 @@ export class M68k {
         }
         
         if((instruction & 0xc000) == 0x0000 && (instruction & 0x3000)) { // move/movea
-            this.log("> move/movea");
             let length = 1;
             if((instruction & 0x3000) == 0x3000) {
                 length = 2;
@@ -1729,7 +1857,10 @@ export class M68k {
             if(((instruction >> 6) & 0b111) == 0b001) {
                 // movea
                 val = makeSigned(val, length);
-                this.registers[ABASE + ((instruction >> 9) & 0b111)] = val;
+                let destReg = ((instruction >> 9) & 0b111)
+                this.registers[ABASE + destReg] = val;
+                this.log("> movea" + lengthString(length)
+                    + " " + this.eaStr(effectiveAddress, length, oldPc)+",a"+destReg);
             }else{
                 // move
                 let ccr = this.registers[CCR] & X;
@@ -1737,9 +1868,11 @@ export class M68k {
                 ccr |= isNegative(val, length) ? N : 0;
                 this.registers[CCR] = ccr;
                 
-                let destEa = (instruction & 0x0fc0) >> 6;
-                destEa = (destEa >> 3) | ((destEa & 0b111) << 3);
+                let destEa = (instruction & 0x0fc0) >>> 6;
+                destEa = (destEa >>> 3) | ((destEa & 0b111) << 3);
                 this.writeEa(destEa, val, length);
+                this.log("> move" + lengthString(length)
+                    + " " + this.eaStr(effectiveAddress, length, oldPc) + "," + this.eaStr(destEa, length, oldPc));
             }
             return true;
         }
@@ -1879,7 +2012,7 @@ export class M68k {
         if((instruction & 0xf0c0) == 0x50c0) { // scc
             this.log("> scc");
             
-            let condition = (instruction & 0x0f00) >> 8;
+            let condition = (instruction & 0x0f00) >>> 8;
             
             if(effectiveAddress & 0b111000) {
                 // Memory
