@@ -3,6 +3,7 @@
 import {M68k} from "./m68k.js";
 import {Z80} from "./z80.js";
 import {Controller} from "./controller.js";
+import {Vdp} from "./vdp.js"
 
 export const NTSC = "ntsc";
 export const PAL = "pal";
@@ -38,6 +39,7 @@ export class Emulator {
         
         this.m68k = new M68k(this);
         this.z80 = new Z80(this);
+        this.vdp = new Vdp(this);
         
         this.m68kOwnBus = false;
         
@@ -84,9 +86,26 @@ export class Emulator {
             case 0xa1000c:
                 // Controller n control
                 return this.ports[((addr & ~1) - 0xa10008) / 2].readControl(this.time);
+            
+            case 0xc00000:
+            case 0xc00002:
+                // VDP Data
+                return this.vdp.readData();
+            
+            case 0xc00004:
+            case 0xc00006:
+                // VDP Control
+                return this.vdp.readControl();
+            
+            case 0xc00008:
+            case 0xc0000a:
+            case 0xc0000c:
+            case 0xc0000e:
+                // VDP HV Count
+                return this.vdp.readHvCount();
         }
         
-        console.warn("Read from unknown memory address 0x"+addr.toString(16));
+        //console.warn("Read from unknown memory address 0x"+addr.toString(16));
         
         return 0;
     }
@@ -134,6 +153,26 @@ export class Emulator {
                     this.z80.startReset();
                 }
                 return;
+            
+            case 0xc00000:
+            case 0xc00002:
+                // VDP Data
+                this.vdp.writeData(value);
+                return;
+            
+            case 0xc00004:
+            case 0xc00006:
+                // VDP Control
+                this.vdp.writeControl(value);
+                return;
+            
+            case 0xc00008:
+            case 0xc0000a:
+            case 0xc0000c:
+            case 0xc0000e:
+                // VDP HV Count
+                this.vdp.writeHvCount(value);
+                return;
         }
         
         if(addr == 0xa14000 && (this.options.version & 0x0f)) {
@@ -146,7 +185,7 @@ export class Emulator {
             return;
         }
         
-        console.warn("Write to unknown memory address 0x"+addr.toString(16));
+        //console.warn("Write to unknown memory address 0x"+addr.toString(16));
     }
     
     readMemory8(addr) {
@@ -154,7 +193,6 @@ export class Emulator {
         
         if(addr <= 0x3fffff) {
             // ROM
-            console.log("8 rom read " + addr.toString(16));
             return this.rom.getUint8(addr, false);
         }
         
@@ -163,7 +201,7 @@ export class Emulator {
             return this.mainRam.getUint8(addr & 0x00ffff, false);
         }
         
-        return this.readMemory(addr) >> 8;
+        return this.readMemory(addr) >>> 8;
     }
     
     writeMemory8(addr, value) {
@@ -183,7 +221,7 @@ export class Emulator {
     }
     
     writeMemory32(addr, value) {
-        this.writeMemory(addr, value >> 16);
+        this.writeMemory(addr, value >>> 16);
         this.writeMemory(addr + 2, value & 0xffff);
     }
     
@@ -227,6 +265,7 @@ export class Emulator {
     
     runTime(factor) {
         this.running = true;
+        this.vdp.handleFrame();
         
         if(this.options.region == PAL) {
             this.time += ~~((PAL_CLOCK / FPS) * factor);

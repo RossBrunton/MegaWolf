@@ -13,7 +13,9 @@
         <input type='submit' value='Load ROM'>
     </form>
     <button onclick='emulator.doInstruction()'>Run Instruction</button>
-    <button onclick='emulator.doUntilFail(100);'>Run Until Fail</button>
+    <button onclick='emulator.doUntilFail(10000);'>Run Until Fail</button>
+    
+    <canvas width=518 height=256></canvas>
 </body>
 
 </html>
