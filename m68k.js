@@ -561,10 +561,30 @@ export class M68k {
     }
     
     trap(vector) {
-        console.warn("Got exception 0x" + vector.toString(16) + ", halp");
+        this.log("Got exception 0x" + vector.toString(16));
+        let tmp = this.registers[SR] | this.registers[CCR];
+        this.registers[SR] &= 0x0fff;
+        this.registers[SR] |= S;
+        this.changeMode(SUPER);
+        
+        let handler = this.emu.readMemory32(vector * 4);
+        this.registers[SP] -= 4;
+        this.emu.writeMemory32(this.registers[SP], this.registers[PC]);
+        this.registers[SP] -= 2;
+        this.emu.writeMemory(this.registers[SP], tmp);
+        this.registers[PC] = handler;
     }
     
     doInstruction() {
+        // Check for external exception
+        let i = this.emu.vdp.interrupt();
+        let mask = (this.registers[SR] >>> 8) & 0b111; // Is this right?
+        if(i > mask) {
+            this.emu.vdp.clearInterrupt();
+            this.time += 44;
+            this.trap(0x18 + i);
+        }
+        
         let oldPc = this.registers[PC]
         let instruction = this.emu.readMemory(oldPc);
         this.registers[PC] += 2;
@@ -1977,8 +1997,19 @@ export class M68k {
         
         if(instruction == 0x4e73) { // rte
             this.log("> rte");
-            console.error("RTE not implemented yet");
-            return false;
+            
+            let sr = this.emu.readMemory(this.registers[SP]);
+            this.registers[CCR] = sr & 0x00ff;
+            this.registers[SR] = sr & 0xff00;
+            this.registers[SP] += 2;
+            
+            this.registers[PC] = this.emu.readMemory32(this.registers[SP]);
+            this.registers[SP] += 4;
+            
+            this.changeMode(sr & S ? SUPER : USER);
+            this.time += 16;
+            
+            return true;
         }
         
         if(instruction == 0x4e77) { // rtr

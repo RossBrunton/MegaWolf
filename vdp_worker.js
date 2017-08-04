@@ -30,6 +30,7 @@ const RDMAS_LO = 21;
 const RDMAS_MI = 22;
 const RDMAS_HI = 23;
 const RSTATUS = 24;
+const REX = 26;
 
 let vram = null;
 let cram = null;
@@ -56,4 +57,9 @@ self.onmessage = function(e) {
 
 let raf = function() {
     // ...
+    
+    // VBlank interrupt
+    if(registers[RM2] & 0x20) {
+        registers[REX] = 6;
+    }
 }

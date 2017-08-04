@@ -29,6 +29,7 @@ const RDMAS_MI = 22;
 const RDMAS_HI = 23;
 const RSTATUS = 24;
 const RCODE = 25;
+const REX = 26;
 
 const VRAM_R = 0b0000;
 const VRAM_W = 0b0001;
@@ -57,7 +58,7 @@ export class Vdp {
         
         this.worker = new Worker("./vdp_worker.js", {"type":"module"});
         
-        this.registerBuffer = new SharedArrayBuffer(26);
+        this.registerBuffer = new SharedArrayBuffer(27);
         this.vramBuffer = new SharedArrayBuffer(64 * 1024);
         this.vram = new DataView(this.vramBuffer);
         this.cramBuffer = new SharedArrayBuffer(64 * 9);
@@ -246,5 +247,15 @@ export class Vdp {
     
     handleFrame() {
         this.worker.postMessage([MSG_RAF, null]);
+        
+        document.querySelector("canvas").getContext("2d").putImageData(this.dumpVram(), 0, 0);
+    }
+    
+    interrupt() {
+        return this.registers[REX];
+    }
+    
+    clearInterrupt() {
+        this.registers[REX] = 0;
     }
 }

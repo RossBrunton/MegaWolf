@@ -4,7 +4,7 @@ let u8 = new Uint8Array(1);
 let u16 = new Uint16Array(1);
 let u32 = new Uint32Array(1);
 
-const DEBUG = true;
+const DEBUG = false;
 let log = function(msg) {
     if(DEBUG) {
         console.log("[z80] "+msg);
