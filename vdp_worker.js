@@ -56,7 +56,7 @@ self.onmessage = function(e) {
     }
 }
 
-// These return cells
+// These return number cells
 let getDisplayCols = function() {
     if(registers[RM4] & 0x01) {
         return 40;
@@ -73,9 +73,16 @@ let getDisplayRows = function() {
     }
 }
 
+let getPlaneCols = function() {
+    return [32, 64, 64, 128][registers[RPLANE_SIZE] & 0b11];
+}
+
+let getPlaneRows = function() {
+    return [32, 64, 64, 128][(registers[RPLANE_SIZE] >> 4) & 0b11];
+}
+
 let raf = function() {
-    // ...
-    let [frame, width, height] = doFrame();
+    let frame = doFrame();
     
     // VBlank interrupt
     if(registers[RM2] & 0x20) {
@@ -94,29 +101,38 @@ let paletteRead = function(id, allowTransparent) {
         let clr = cram.getUint16(id * 2, false);
         
         let procC = function(offset) {
-            let c = (clr >> 1) & 0b111;
+            let c = (clr >> offset) & 0b1111;
+            if(clr > 0b0100) clr ++;;
             
-            switch(c) {
-                case 0b000: return 0;
-                case 0b111: return 0xff;
-                default: return ~~(0xff / 0b111) * c;
-            }
+            return c | (c << 4);
         }
         
-        let r = procC(1);
-        let g = procC(5);
-        let b = procC(9);
+        let r = procC(0);
+        let g = procC(4);
+        let b = procC(8);
         
-        return (r << 12) | (g << 8) | (b << 4) | 0xff; 
+        return (r << 24) | (g << 16) | (b << 8) | 0xff; 
     }
 }
 
+
+// Frame drawing state
+let rows, cols;
+let prows, pcols; // Plane sizes
+let width, height; // Of the canvas
+let px, py; // On the plane
+let cx, cy; // On the canvas
+
 let doFrame = function() {
-    let rows = getDisplayRows();
-    let cols = getDisplayCols();
-    let totalPx = rows * cols * 8 * 8;
-    let display8 = new Uint8ClampedArray(rows * cols * 4 * 8 * 8);
-    let dv = new DataView(display8.buffer);
+    rows = getDisplayRows();
+    cols = getDisplayCols();
+    prows = getPlaneRows();
+    pcols = getPlaneCols();
+    width = cols * 8;
+    height = rows * 8;
+    let totalPx = (rows * 8) * (cols * 8);
+    let display = new ArrayBuffer(totalPx * 4);
+    let dv = new DataView(display);
     
     // Fill in the background first
     let bground = paletteRead(registers[RBACKGROUND], false);
@@ -124,5 +140,67 @@ let doFrame = function() {
         dv.setUint32(i * 4, bground);
     }
     
-    return [display8.buffer, cols * 8, rows * 8];
+    // And now the planes
+    // No priority:
+    drawPlane((registers[RPLANEB_NT] & 0x07) << 13, false, dv); // B
+    drawPlane((registers[RPLANEA_NT] & 0x38) << 10, false, dv); // A
+    // Sprites
+    // Window
+    
+    // Priority:
+    drawPlane((registers[RPLANEB_NT] & 0x07) << 13, true, dv); // B
+    drawPlane((registers[RPLANEA_NT] & 0x38) << 10, true, dv); // A
+    // Sprites
+    // Window
+    
+    return display;
+}
+
+let drawPlane = function(start, priority, view) {
+    for(let y = 0; y < prows; y ++) {
+        for(let x = 0; x < pcols; x ++) {
+            let cell = vram.getUint16(start, false);
+            start += 2;
+            if(((cell & 0x8000) && priority) || (!(cell & 0x8000) && !priority)) {
+                // Priority is correct
+                drawTile(cell, x * 8, y * 8, view);
+            }
+        }
+    }
+}
+
+// x and y are coordinates exactly
+let drawTile = function(cell, x, y, view) {
+    let pmask = (cell >>> 9) & 0x0030;
+    let i = (cell & 0x7f) << 5; // Is this right?
+    let hi = true;
+    let xbase = x;
+    let ybase = y;
+    
+    let get = function() {
+        let ret = 0;
+        if(hi) {
+            ret = vram.getUint8(i) >>> 4;
+        }else{
+            ret = vram.getUint8(i++) & 0x0f;
+        }
+        hi = !hi;
+        return ret;
+    }
+    
+    for(let ys = 0; ys < 8; ys ++) {
+        for(let xs = 0; xs < 8; xs ++) {
+            let value = get();
+            let px = paletteRead(pmask | value, true);
+            if(px) { // Check if not transparent
+                
+                // Check if in range
+                if(xs + xbase > width) continue;
+                if((ys + ybase) > height) continue;
+                
+                // All good? Drop the pixel
+                view.setUint32(((xs + xbase) + ((ys + ybase) * width)) * 4, px, false);
+            }
+        }
+    }
 }

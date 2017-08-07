@@ -126,7 +126,6 @@ export class Vdp {
     
     writeData(value) {
         this.dblWord = false;
-        //console.log("Data write "+value);
         
         if(this.awaitingFill) {
             let lo = value & 0xff;
@@ -182,10 +181,8 @@ export class Vdp {
     }
     
     doDma() {
-        console.log("Performing DMA!");
         if(!(this.registers[RM2] & 0x10)) {
             // But the flag is not set, so abort
-            console.log("... Or not");
             return;
         }
         let length = (this.registers[RDMAL_HI] << 8) | this.registers[RDMAL_LO];
