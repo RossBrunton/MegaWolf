@@ -60,8 +60,7 @@ export class Emulator {
             // ROM
             if(addr > this.rom.byteLength) {
                 console.error("Out of bounds ROM read");
-                debugger;
-                return;
+                return 0x0;
             }
             return this.rom.getUint16(addr, false);
         }
@@ -111,7 +110,6 @@ export class Emulator {
         }
         
         //console.warn("Read from unknown memory address 0x"+addr.toString(16));
-        
         return 0;
     }
     
@@ -235,8 +233,11 @@ export class Emulator {
             return this.readMemory8(addr);
         }else if(n == 2) {
             return this.readMemory(addr);
-        }else{
+        }else if(n == 4) {
             return this.readMemory32(addr);
+        }else{
+            console.error("Unknown n value ("+n+") sent to readMemoryN!");
+            return 0;
         }
     }
     
@@ -245,8 +246,11 @@ export class Emulator {
             this.writeMemory8(addr, value);
         }else if(n == 2) {
             this.writeMemory(addr, value);
-        }else{
+        }else if(n == 4) {
             this.writeMemory32(addr, value);
+        }else{
+            console.error("Unknown n value ("+n+") sent to readMemoryN!");
+            return 0;
         }
     }
     
