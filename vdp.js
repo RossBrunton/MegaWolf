@@ -2,6 +2,7 @@
 
 const MSG_INIT = 0;
 const MSG_RAF = 1;
+const MSG_FRAME = 2;
 
 const RM1 = 0;
 const RM2 = 1;
@@ -61,13 +62,14 @@ export class Vdp {
         this.registerBuffer = new SharedArrayBuffer(27);
         this.vramBuffer = new SharedArrayBuffer(64 * 1024);
         this.vram = new DataView(this.vramBuffer);
-        this.cramBuffer = new SharedArrayBuffer(64 * 9);
+        this.cramBuffer = new SharedArrayBuffer(64 * 16);
         this.cram = new DataView(this.cramBuffer);
         this.vsramBuffer = new SharedArrayBuffer(40 * 10);
         this.vsram = new DataView(this.vsramBuffer);
         this.registers = new Uint8Array(this.registerBuffer);
         
         this.worker.postMessage([MSG_INIT, [this.registerBuffer, this.vramBuffer, this.cramBuffer, this.vsramBuffer]]);
+        this.worker.onmessage = this.message.bind(this);
         this.dblWord = false;
         this.awaitingFill = false;
         
@@ -75,23 +77,24 @@ export class Vdp {
     }
     
     writeControl(value) {
-        if(value & 0x8000) {
+        if((value & 0xc000) == 0x8000 && !this.dblWord) {
             // Internal register write
             let addr = (value >> 8) & 0x7f;
             let data = value & 0xff;
             this.registers[addr] = data;
         }else{
             if(this.dblWord) {
-                let cd = (value >>> 2) & 0xff;
-                this.registers[RCODE] &= ~0xfc;
+                // Second word
+                let cd = (value >>> 2) & 0xfc;
+                this.registers[RCODE] &= 0b000011;
                 this.registers[RCODE] |= cd;
                 
                 this.address &= 0x3fff;
                 this.address |= (value & 0b11) << 14;
                 
-                if(this.registers[RCODE] & 0b10000) {
+                if(this.registers[RCODE] & 0b010000) {
                     //VRAM COPY DMA MODE
-                    console.log("VRAM COPY DMA MODE");
+                    console.error("VRAM COPY DMA mode not implemented yet");
                 }
                 
                 if(this.registers[RCODE] & 0b100000) {
@@ -99,12 +102,15 @@ export class Vdp {
                     this.doDma();
                 }
                 
+                //this.registers[RCODE] &= 0b001111;
+                
                 this.dblWord = false;
             }else{
+                // First word
                 this.dblWord = true;
                 
                 let cd = value >>> 14;
-                this.registers[RCODE] &= ~0b11;
+                this.registers[RCODE] &= 0b111100;
                 this.registers[RCODE] |= cd;
                 
                 this.address &= 0xc000;
@@ -145,7 +151,7 @@ export class Vdp {
             case VRAM_W: arr = this.vram; break;
             case CRAM_W: arr = this.cram; break;
             case VSRAM_W: arr = this.vsram; break;
-            default: return;
+            default: console.error("Unknown rcode "+this.registers[RCODE].toString(16)+"!"); return;
         }
         
         arr.setUint16(this.address, value, false);
@@ -196,7 +202,6 @@ export class Vdp {
             console.error("VRAM Copy not yet implemented");
         }else{
             // 68k -> vdp ram
-            console.log("True DMA in progress");
             let arr = this.vram;
             if((this.registers[RCODE] & 0b111) == CRAM_W) {
                 arr = this.cram;
@@ -212,6 +217,18 @@ export class Vdp {
                 arr.setUint16(address, val, false);
                 address += this.registers[RAUTOINC];
             }
+        }
+    }
+    
+    message(e) {
+        let dat = e.data[1];
+        
+        switch(e.data[0]) {
+            case MSG_FRAME:
+                let [buff, width, height] = dat;
+                let id = new ImageData(new Uint8ClampedArray(buff), width, height);
+                document.querySelector("#display").getContext("2d").putImageData(id, 0, 0);
+                break;
         }
     }
     
@@ -248,7 +265,7 @@ export class Vdp {
     handleFrame() {
         this.worker.postMessage([MSG_RAF, null]);
         
-        document.querySelector("canvas").getContext("2d").putImageData(this.dumpVram(), 0, 0);
+        document.querySelector("#vram").getContext("2d").putImageData(this.dumpVram(), 0, 0);
     }
     
     interrupt() {
