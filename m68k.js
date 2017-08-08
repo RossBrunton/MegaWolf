@@ -81,7 +81,9 @@ let doCondition = function(condition, value) {
         case 0b1110:
             // GT (N && V && ¬Z || ¬N && ¬V && ¬Z)
             return (((value & N) && (value & V)) || ((value & (N | V)) == 0)) && (value & Z) == 0;
-        
+        case 0b1111:
+            // LE (Z || (N && ¬V || ¬N && V)
+            return (value & Z) || ((value & N) && !(value & V)) || (!(value & N) && (value & V));
         default:
             console.error("Invalid condition!");
             return;
@@ -944,7 +946,7 @@ export class M68k {
         }
         
         if(((instruction & 0xf000) == 0xc000 || (instruction & 0xf100) == 0xb100 
-        || (instruction & 0xf000) == 0x8000) && (instruction & 0x01c0) != 0x01c0) { // and/eor/or
+        || (instruction & 0xf000) == 0x8000) && (instruction & 0x00c0) != 0x00c0) { // and/eor/or
             this.log("> and/eor/or");
             let register = (instruction >> 9) & 0b111;
             let opmode = (instruction >> 6) & 0b111;

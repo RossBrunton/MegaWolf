@@ -3,6 +3,7 @@
 const MSG_INIT = 0;
 const MSG_RAF = 1;
 const MSG_FRAME = 2;
+const MSG_RETBUF = 3;
 
 console.log("VDP Worker Started!");
 
@@ -39,6 +40,9 @@ let vsram = null;
 let inited = false;
 let registers = null;
 
+let displayBuffer = null;
+let waitingForBuffer = false;
+
 self.onmessage = function(e) {
     let data = e.data[1];
     
@@ -52,6 +56,15 @@ self.onmessage = function(e) {
         
         case MSG_RAF:
             raf();
+            break;
+        
+        case MSG_RETBUF:
+            displayBuffer = data;
+            waitingForBuffer = false;
+            break;
+        
+        default:
+            console.error("VDP worker got unknown message type "+e.data[0]);
             break;
     }
 }
@@ -82,15 +95,18 @@ let getPlaneRows = function() {
 }
 
 let raf = function() {
-    let frame = doFrame();
+    if(!waitingForBuffer) { // If we don't have our buffer, do nothing
+        let frame = doFrame();
+        
+        // Send the data back
+        waitingForBuffer = true;
+        postMessage([MSG_FRAME, [frame, width, height]], [frame]);
+    }
     
     // VBlank interrupt
     if(registers[RM2] & 0x20) {
         registers[REX] = 6;
     }
-    
-    // Send the data back
-    postMessage([MSG_FRAME, [frame, width, height]], [frame]);
 }
 
 // Converts the colour into a 0xrrggbbaa 32 bit int
@@ -122,6 +138,8 @@ let prows, pcols; // Plane sizes
 let width, height; // Of the canvas
 let px, py; // On the plane
 let cx, cy; // On the canvas
+let background; // Background colour
+let first; // First plane?
 
 let doFrame = function() {
     rows = getDisplayRows();
@@ -131,29 +149,31 @@ let doFrame = function() {
     width = cols * 8;
     height = rows * 8;
     let totalPx = (rows * 8) * (cols * 8);
-    let display = new ArrayBuffer(totalPx * 4);
-    let dv = new DataView(display);
+    if(!displayBuffer || displayBuffer.byteLength != totalPx * 4) {
+        if(displayBuffer) console.log("Recreating buffer " + displayBuffer.byteLength + " --> "+(totalPx * 4));
+        displayBuffer = new ArrayBuffer(totalPx * 4);
+    }
+    let dv = new DataView(displayBuffer);
     
     // Fill in the background first
-    let bground = paletteRead(registers[RBACKGROUND], false);
-    for(let i = 0; i < totalPx; i ++) {
-        dv.setUint32(i * 4, bground);
-    }
+    background = paletteRead(registers[RBACKGROUND], false);
     
     // And now the planes
     // No priority:
+    first = true;
     drawPlane((registers[RPLANEB_NT] & 0x07) << 13, false, dv); // B
+    first = false;
     drawPlane((registers[RPLANEA_NT] & 0x38) << 10, false, dv); // A
-    // Sprites
+    drawSprites(registers[RSPRITE_NT] << 9, false, dv); // Sprites
     // Window
     
     // Priority:
     drawPlane((registers[RPLANEB_NT] & 0x07) << 13, true, dv); // B
     drawPlane((registers[RPLANEA_NT] & 0x38) << 10, true, dv); // A
-    // Sprites
+    drawSprites(registers[RSPRITE_NT] << 9, true, dv); // Sprites
     // Window
     
-    return display;
+    return displayBuffer;
 }
 
 let drawPlane = function(start, priority, view) {
@@ -169,37 +189,65 @@ let drawPlane = function(start, priority, view) {
     }
 }
 
+let drawSprites = function(start, priority, view) {
+    while(start) {
+        let vpos = vram.getUint16(start, false) & 0x01ff;
+        let hpos = vram.getUint16(start + 6, false) & 0x00ff;
+        let vsize = (vram.getUint16(start + 2, false) >> 8) & 0b11;
+        let hsize = (vram.getUint16(start + 2, false) >> 10) & 0b11;
+        let cell = (vram.getUint16(start + 4, false));
+        
+        if(((cell & 0x8000) && priority) || (!(cell & 0x8000) && !priority)) {
+            // Priority is correct
+            for(let cx = 0; cx <= hsize; cx ++) {
+                for(let cy = 0; cy <= vsize; cy ++) {
+                    drawTile(cell, hpos - 128 + (cx * 8), vpos - 128 + (cy * 8), view);
+                    cell ++;
+                }
+            }
+        }
+        
+        // Calculate link
+        let link = vram.getUint16(start + 2, false) & 0x7f;
+        if(link != 0) {
+            start = (registers[RSPRITE_NT] << 9) + (link * 8);
+        }else{
+            start = 0;
+        }
+    }
+}
+
 // x and y are coordinates exactly
 let drawTile = function(cell, x, y, view) {
     let pmask = (cell >>> 9) & 0x0030;
-    let i = (cell & 0x7f) << 5; // Is this right?
+    let i = (cell & 0x7ff) << 5; // Is this right?
     let hi = true;
     let xbase = x;
     let ybase = y;
     
-    let get = function() {
-        let ret = 0;
-        if(hi) {
-            ret = vram.getUint8(i) >>> 4;
-        }else{
-            ret = vram.getUint8(i++) & 0x0f;
-        }
-        hi = !hi;
-        return ret;
-    }
-    
     for(let ys = 0; ys < 8; ys ++) {
         for(let xs = 0; xs < 8; xs ++) {
-            let value = get();
+            let value;
+            if(hi) {
+                value = vram.getUint8(i) >>> 4;
+            }else{
+                value = vram.getUint8(i++) & 0x0f;
+            }
+            hi = !hi;
+            
+            // Check if in range
+            if(xs + xbase >= width) continue;
+            if(ys + ybase >= height) continue;
+            if(xs + xbase < 0) continue;
+            if(ys + ybase < 0) continue;
+            
             let px = paletteRead(pmask | value, true);
             if(px) { // Check if not transparent
-                
-                // Check if in range
-                if(xs + xbase > width) continue;
-                if((ys + ybase) > height) continue;
-                
                 // All good? Drop the pixel
                 view.setUint32(((xs + xbase) + ((ys + ybase) * width)) * 4, px, false);
+            }else if(first) {
+                // Put a background pixel down
+                view.setUint32(((xs + xbase) + ((ys + ybase) * width)) * 4, background, false);
             }
         }
     }

@@ -46,6 +46,7 @@ export class Emulator {
         this.ports = [new Controller(), new Controller(), new Controller()];
         
         this.time = 0;
+        this.displayCounter = 0.0;
     }
     
     loadRom(rom) {
@@ -274,7 +275,12 @@ export class Emulator {
     
     runTime(factor) {
         this.running = true;
-        this.vdp.handleFrame();
+        
+        this.displayCounter += factor;
+        while(this.displayCounter >= 1.0) {
+            this.vdp.handleFrame();
+            this.displayCounter -= 1.0;
+        }
         
         if(this.options.region == PAL) {
             this.time += ~~((PAL_CLOCK / FPS) * factor);
@@ -293,7 +299,7 @@ export class Emulator {
                 return;
             }
         }
-            this.m68k.updateSpans();
+        this.m68k.updateSpans();
         
         requestAnimationFrame(this.runTime.bind(this, factor));
     }

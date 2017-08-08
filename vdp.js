@@ -3,6 +3,7 @@
 const MSG_INIT = 0;
 const MSG_RAF = 1;
 const MSG_FRAME = 2;
+const MSG_RETBUF = 3;
 
 const RM1 = 0;
 const RM2 = 1;
@@ -74,6 +75,7 @@ export class Vdp {
         this.awaitingFill = false;
         
         this.address = 0;
+        this.registers[RSTATUS] = 0x3600; // Empty is set
     }
     
     writeControl(value) {
@@ -177,7 +179,7 @@ export class Vdp {
     }
     
     readHvCount() {
-        
+        console.log("Attempted HV read");
     }
     
     doDma() {
@@ -225,6 +227,7 @@ export class Vdp {
                 let [buff, width, height] = dat;
                 let id = new ImageData(new Uint8ClampedArray(buff), width, height);
                 document.querySelector("#display").getContext("2d").putImageData(id, 0, 0);
+                this.worker.postMessage([MSG_RETBUF, buff], [buff]);
                 break;
         }
     }
