@@ -33,6 +33,7 @@ let u16 = new Uint16Array(1);
 let u32 = new Uint32Array(1);
 
 const DEBUG = false;
+const LOGGING = true;
 
 let doCondition = function(condition, value) {
     switch(condition) {
@@ -115,6 +116,8 @@ let getOperandLength = function(instruction, allowAddress) {
 }
 
 let lengthString = function(l) {
+    if(!LOGGING) return "";
+    
     switch(l) {
         case 1: return ".b";
         case 2: return ".w";
@@ -124,6 +127,8 @@ let lengthString = function(l) {
 }
 
 let conditionStr = function(condition) {
+    if(!LOGGING) return "";
+    
     switch(condition) {
         case 0b0000: return "t";
         case 0b0001: return "f";
@@ -220,14 +225,20 @@ export class M68k {
         if(DEBUG) {
             console.log("[m68k] " + msg);
         }
+        
+        if(!LOGGING) return;
         this.logp += 1;
         this.logp %= 500;
         this.logEntries[this.logp] = msg;
     }
     
     dumpLog() {
-        for(let i = this.logp; (i != this.logp +1) && !(this.logp == 500 && i == 0); (i != 0) ? i -- : i = 500) {
-            console.log(this.logEntries[i]);
+        if(!LOGGING) {
+            console.log("Logging disabled...");
+        }else{
+            for(let i = this.logp; (i != this.logp +1) && !(this.logp == 500 && i == 0); (i != 0) ? i -- : i = 500) {
+                console.log(this.logEntries[i]);
+            }
         }
     }
     
@@ -453,6 +464,8 @@ export class M68k {
     }
     
     eaStr(ea, length, pc) {
+        if(!LOGGING) return "";
+        
         switch(ea & 0b111000) {
             case 0b000000: { // Data register
                 return "d" + ea;
@@ -596,6 +609,10 @@ export class M68k {
             this.emu.vdp.clearInterrupt();
             this.time += 44;
             this.trap(0x18 + i);
+            
+            // Set the interrupt mask thing
+            this.registers[SR] &= ~0x700;
+            this.registers[SR] |= i << 8;
         }
         
         let oldPc = this.registers[PC];
@@ -1932,6 +1949,7 @@ export class M68k {
             for(let a = 0; a <= 15; a ++) {
                 if(mask & (1 << a)) {
                     if(15 - a == (ABASE + reg)) {
+                        // If we are writing the register we are using to index, then the initial value is set
                         this.writeEa(effectiveAddress, init, length);
                     }else{
                         this.writeEa(effectiveAddress, this.registers[15 - a], length);

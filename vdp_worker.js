@@ -181,7 +181,7 @@ let drawPlane = function(start, priority, view) {
         for(let x = 0; x < pcols; x ++) {
             let cell = vram.getUint16(start, false);
             start += 2;
-            if(((cell & 0x8000) && priority) || (!(cell & 0x8000) && !priority)) {
+            if(((cell & 0x8000) == 0x8000) == priority) {
                 // Priority is correct
                 drawTile(cell, x * 8, y * 8, view);
             }
@@ -197,7 +197,7 @@ let drawSprites = function(start, priority, view) {
         let hsize = (vram.getUint16(start + 2, false) >> 10) & 0b11;
         let cell = (vram.getUint16(start + 4, false));
         
-        if(((cell & 0x8000) && priority) || (!(cell & 0x8000) && !priority)) {
+        if(((cell & 0x8000) == 0x8000) == priority) {
             // Priority is correct
             for(let cx = 0; cx <= hsize; cx ++) {
                 for(let cy = 0; cy <= vsize; cy ++) {
