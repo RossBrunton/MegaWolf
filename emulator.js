@@ -59,7 +59,7 @@ export class Emulator {
         
         if(addr <= 0x3fffff) {
             // ROM
-            if(addr > this.rom.byteLength) {
+            if(addr >= this.rom.byteLength) {
                 console.error("Out of bounds ROM read");
                 return 0x0;
             }

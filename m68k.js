@@ -334,7 +334,7 @@ let makeSigned = function(val, length) {
     }else if(length == 2) {
         return (val & 0x8000) ? val - 0xffff - 1 : val;
     }else if(length == 4) {
-        return (val & 0x80000000) ? - 0xffffffff - 1 : val;
+        return val;
     }else{
         console.error("Unknown length for makeSigned!");
         return val;
@@ -417,6 +417,7 @@ export class M68k {
         this.oldSp = 0;
         this.logEntries = new Array(500);
         this.logp = 0;
+        this.crashed = false;
     }
     
     log(msg) {
@@ -770,6 +771,7 @@ export class M68k {
         this.changeMode(SUPER);
         this.registers[SP] = this.emu.readMemory32(0x0000);
         this.registers[PC] = this.emu.readMemory32(0x0004);
+        this.crashed = false;
     }
     
     changeMode(mode) {
@@ -804,6 +806,12 @@ export class M68k {
     }
     
     doInstruction() {
+        // Are we crashed?
+        if(this.crashed) {
+            this.time += 4;
+            return true;
+        }
+        
         // Check for external exception
         let i = this.emu.vdp.interrupt();
         let mask = (this.registers[SR] >>> 8) & 0b111; // Is this right?
@@ -818,6 +826,11 @@ export class M68k {
         }
         
         let oldPc = this.registers[PC];
+        if(oldPc & 0b1) {
+            console.error("Odd word read at 0x"+oldPc.toString(16)+", crash!");
+            this.crashed = true;
+            return true;
+        }
         let instruction = this.emu.readMemory(oldPc);
         this.registers[PC] += 2;
         this.time += 4;
@@ -934,15 +947,15 @@ export class M68k {
             }
             
             case JMP: {
-                this.log("> jmp");
-                
                 this.registers[PC] = this.addressEa(effectiveAddress, 4);
                 this.time += 4;
+                
+                this.log("> jmp #$"+this.registers[PC].toString(16));
+                
                 return true;
             }
             
             case JSR: {
-                this.log("> jsr");
                 let addr = this.addressEa(effectiveAddress, 4);
                 
                 this.registers[SP] -= 4;
@@ -950,6 +963,9 @@ export class M68k {
                 
                 this.registers[PC] = addr;
                 this.time += 12;
+                
+                this.log("> jsr #$"+this.registers[PC].toString(16));
+                
                 return true;
             }
             
@@ -2091,62 +2107,81 @@ export class M68k {
             }
             
             case MOVEM_TO_REG: {
-                this.log("> movem (to registers)");
                 let length = 2;
                 if(noEffectiveAddress == 0x4cc0) {
                     length = 4;
                 }
                 
-                if((effectiveAddress & 0b111000) == 0b000000 || (effectiveAddress & 0b111000) == 0b001000
-                || (effectiveAddress & 0b111000) == 0b100000) {
-                    console.error("Invalid EA for movem to register");
-                    return false;
+                let mask = this.pcAndAdvance(2);
+                
+                let val = 0;
+                let inc = false;
+                let addr = 0;
+                if((effectiveAddress & 0b111000) == 0b011000) {
+                    inc = true;
+                }else{
+                    addr = this.addressEa(effectiveAddress, length);
                 }
                 
-                let mask = this.pcAndAdvance(2);
                 this.time += 8;
                 for(let a = 0; a <= 15; a ++) {
                     if(mask & (1 << a)) {
-                        let val = this.readEa(effectiveAddress, length);
-                        if(length == 2) {
-                            this.registers[a] &= ~lengthMask(2);
-                            this.registers[a] |= val;
+                        if(inc) {
+                            val = this.readEa(effectiveAddress, length);
                         }else{
-                            this.registers[a] = val;
+                            val = this.emu.readMemoryN(addr, length);
+                            addr += length;
                         }
+                        
+                        this.registers[a] = makeSigned(val, length);
                     }
                 }
+                
+                this.log("> movem"+lengthString(length)+" "+this.eaStr(effectiveAddress)+",#$"+mask.toString(16));
                 
                 return true;
             }
             
             case MOVEM_TO_MEM: {
-                this.log("> movem (to memory)");
                 let length = 2;
                 if(noEffectiveAddress == 0x48c0) {
                     length = 4;
                 }
                 
-                if((effectiveAddress & 0b111000) == 0b000000 || (effectiveAddress & 0b111000) == 0b001000
-                || (effectiveAddress & 0b111000) == 0b011000) {
-                    console.error("Invalid EA for movem to memory");
-                    return false;
+                let mask = this.pcAndAdvance(2);
+                
+                let val = 0;
+                let dec = false;
+                let addr = 0;
+                if((effectiveAddress & 0b111000) == 0b100000) {
+                    dec = true;
+                }else{
+                    addr = this.addressEa(effectiveAddress, length);
                 }
                 
                 let reg = effectiveAddress & 0b111;
                 let init = this.registers[ABASE + reg];
-                let mask = this.pcAndAdvance(2);
                 this.time += 4;
                 for(let a = 0; a <= 15; a ++) {
                     if(mask & (1 << a)) {
-                        if(15 - a == (ABASE + reg)) {
-                            // If we are writing the register we are using to index, then the initial value is set
-                            this.writeEa(effectiveAddress, init, length);
+                        let r = dec ? 15 - a : a;
+                        
+                        if(r == reg + ABASE) {
+                            val = init;
                         }else{
-                            this.writeEa(effectiveAddress, this.registers[15 - a], length);
+                            val = this.registers[r];
+                        }
+                        
+                        if(dec) {
+                            this.writeEa(effectiveAddress, val, length);
+                        }else{
+                            this.emu.writeMemoryN(addr, val, length);
+                            addr += length;
                         }
                     }
                 }
+                
+                this.log("> movem"+lengthString(length)+" #$"+mask.toString(16)+","+this.eaStr(effectiveAddress));
                 
                 return true;
             }
@@ -2396,6 +2431,16 @@ export class M68k {
     updateSpans() {
         for(let i = 0; i <= 17; i ++) {
             document.querySelector("#r"+i).innerHTML = this.registers[i].toString(16);
+        }
+    }
+    
+    printStack() {
+        for(let i = -16; i < 16; i ++) {
+            if(i == 0) console.log("--");
+            console.log(
+                (this.registers[SP] - (i * 4)).toString(16)
+                +": "+this.emu.readMemory32(this.registers[SP] - (i * 4)).toString(16));
+            if(i == 0) console.log("--");
         }
     }
 }
