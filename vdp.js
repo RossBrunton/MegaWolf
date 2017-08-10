@@ -30,8 +30,11 @@ const RDMAS_LO = 21;
 const RDMAS_MI = 22;
 const RDMAS_HI = 23;
 const RSTATUS = 24;
+
 const RCODE = 25;
 const REX = 26;
+const RH = 27;
+const RV = 28;
 
 const VRAM_R = 0b0000;
 const VRAM_W = 0b0001;
@@ -60,14 +63,14 @@ export class Vdp {
         
         this.worker = new Worker("./vdp_worker.js", {"type":"module"});
         
-        this.registerBuffer = new SharedArrayBuffer(27);
+        this.registerBuffer = new SharedArrayBuffer(29);
+        this.registers = new Uint8Array(this.registerBuffer);
         this.vramBuffer = new SharedArrayBuffer(64 * 1024);
         this.vram = new DataView(this.vramBuffer);
         this.cramBuffer = new SharedArrayBuffer(64 * 16);
         this.cram = new DataView(this.cramBuffer);
         this.vsramBuffer = new SharedArrayBuffer(40 * 10);
         this.vsram = new DataView(this.vsramBuffer);
-        this.registers = new Uint8Array(this.registerBuffer);
         
         this.worker.postMessage([MSG_INIT, [this.registerBuffer, this.vramBuffer, this.cramBuffer, this.vsramBuffer]]);
         this.worker.onmessage = this.message.bind(this);
@@ -152,7 +155,7 @@ export class Vdp {
             case VRAM_W: arr = this.vram; break;
             case CRAM_W: arr = this.cram; break;
             case VSRAM_W: arr = this.vsram; break;
-            default: console.error("Unknown rcode "+this.registers[RCODE].toString(16)+"!"); return;
+            default: return;
         }
         
         arr.setUint16(this.address, value, false);
@@ -179,7 +182,7 @@ export class Vdp {
     }
     
     readHvCount() {
-        console.log("Attempted HV read");
+        return this.registers[RH] | (this.registers[RV] << 8);
     }
     
     doDma() {

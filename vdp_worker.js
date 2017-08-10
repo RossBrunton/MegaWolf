@@ -31,8 +31,11 @@ const RDMAL_HI = 20;
 const RDMAS_LO = 21;
 const RDMAS_MI = 22;
 const RDMAS_HI = 23;
+
 const RSTATUS = 24;
 const REX = 26;
+const RH = 27;
+const RV = 28;
 
 const HSCROLL_ALL = 0b00;
 const HSCROLL_TILE = 0b10;
@@ -49,6 +52,7 @@ let inited = false;
 let registers = null;
 
 let displayBuffer = null;
+let composeBuffer = null;
 let waitingForBuffer = false;
 
 self.onmessage = function(e) {
@@ -169,6 +173,10 @@ let background; // Background colour
 let first; // First plane?
 
 let doFrame = function() {
+    // TODO: HV probably isn't 100% right
+    registers[RV] = 0;
+    registers[RH] = 0;
+    
     rows = getDisplayRows();
     cols = getDisplayCols();
     prows = getPlaneRows();
@@ -179,26 +187,33 @@ let doFrame = function() {
     if(!displayBuffer || displayBuffer.byteLength != totalPx * 4) {
         if(displayBuffer) console.log("Recreating buffer " + displayBuffer.byteLength + " --> "+(totalPx * 4));
         displayBuffer = new ArrayBuffer(totalPx * 4);
+        composeBuffer = new Uint8Array(totalPx);
     }
-    let dv = new DataView(displayBuffer);
     
-    // Fill in the background first
-    background = paletteRead(registers[RBACKGROUND], false);
+    // COMPOSE
+    // Create a buffer of palette entries
     
     // And now the planes
     // No priority:
     first = true;
-    drawPlane((registers[RPLANEB_NT] & 0x07) << 13, false, dv, B); // B
+    drawPlane((registers[RPLANEB_NT] & 0x07) << 13, false, composeBuffer, B); // B
     first = false;
-    drawPlane((registers[RPLANEA_NT] & 0x38) << 10, false, dv, A); // A
-    drawSprites(registers[RSPRITE_NT] << 9, false, dv); // Sprites
+    drawPlane((registers[RPLANEA_NT] & 0x38) << 10, false, composeBuffer, A); // A
+    drawSprites(registers[RSPRITE_NT] << 9, false, composeBuffer); // Sprites
     // Window
     
     // Priority:
-    drawPlane((registers[RPLANEB_NT] & 0x07) << 13, true, dv, B); // B
-    drawPlane((registers[RPLANEA_NT] & 0x38) << 10, true, dv, A); // A
-    drawSprites(registers[RSPRITE_NT] << 9, true, dv); // Sprites
+    drawPlane((registers[RPLANEB_NT] & 0x07) << 13, true, composeBuffer, B); // B
+    drawPlane((registers[RPLANEA_NT] & 0x38) << 10, true, composeBuffer, A); // A
+    drawSprites(registers[RSPRITE_NT] << 9, true, composeBuffer); // Sprites
     // Window
+    
+    // RENDER
+    // Convert these palette entries to actual pixels
+    render(composeBuffer, displayBuffer);
+    
+    registers[RH] = 0xff;
+    registers[RV] = 0xff;
     
     return displayBuffer;
 }
@@ -271,14 +286,27 @@ let drawTile = function(cell, x, y, view, plane) {
             if(xs + xbase < 0) continue;
             if(ys + ybase < 0) continue;
             
-            let px = paletteRead(pmask | value, true);
-            if(px) { // Check if not transparent
+            let px = pmask | value;
+            if(value) { // Check if not transparent
                 // All good? Drop the pixel
-                view.setUint32(((xs + xbase) + ((ys + ybase) * width)) * 4, px, false);
+                view[(xs + xbase) + ((ys + ybase) * width)] = px;
             }else if(first) {
                 // Put a background pixel down
-                view.setUint32(((xs + xbase) + ((ys + ybase) * width)) * 4, background, false);
+                view[(xs + xbase) + ((ys + ybase) * width)] = registers[RBACKGROUND] & 0x3f;
             }
+        }
+    }
+}
+
+let render = function(composeBuffer, displayBuffer) {
+    let dv = new DataView(displayBuffer);
+    for(let y = 0; y < height; y ++) {
+        // V counter
+        registers[RV] = (y > 0xea) ? (y - 5) : y;
+        
+        for(let x = 0; x < width; x ++) {
+            registers[RH] = (x > 0xe9) ? (x - 0x56) : x;
+            dv.setUint32(((y * width) + x) * 4, paletteRead(composeBuffer[(y * width) + x], false), false);
         }
     }
 }
