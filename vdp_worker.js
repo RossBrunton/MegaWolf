@@ -218,8 +218,8 @@ let drawPlane = function(start, priority, view, plane) {
 
 let drawSprites = function(start, priority, view) {
     while(start) {
-        let vpos = vram.getUint16(start, false) & 0x01ff;
-        let hpos = vram.getUint16(start + 6, false) & 0x00ff;
+        let vpos = vram.getUint16(start, false) & 0x03ff;
+        let hpos = vram.getUint16(start + 6, false) & 0x01ff;
         let vsize = (vram.getUint16(start + 2, false) >> 8) & 0b11;
         let hsize = (vram.getUint16(start + 2, false) >> 10) & 0b11;
         let cell = (vram.getUint16(start + 4, false));
