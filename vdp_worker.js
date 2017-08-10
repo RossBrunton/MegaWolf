@@ -34,6 +34,14 @@ const RDMAS_HI = 23;
 const RSTATUS = 24;
 const REX = 26;
 
+const HSCROLL_ALL = 0b00;
+const HSCROLL_TILE = 0b10;
+const HSCROLL_SCANLINE = 0b11;
+
+const A = 0;
+const B = 1;
+const S = 2;
+
 let vram = null;
 let cram = null;
 let vsram = null;
@@ -92,6 +100,25 @@ let getPlaneCols = function() {
 
 let getPlaneRows = function() {
     return [32, 64, 64, 128][(registers[RPLANE_SIZE] >> 4) & 0b11];
+}
+
+let getHScroll = function(plane, line) {
+    if(plane == S) return 0;
+    let base = registers[RHORSCROLL] << 10;
+    
+    switch(registers[RM3] & 0b11) {
+        case HSCROLL_ALL:
+            return vram.getUint16(base + (plane * 2), false);
+            
+        case HSCROLL_TILE:
+            return vram.getUint16(base + ((line / 8) * 4) + (plane * 2), false);
+        
+        case HSCROLL_SCANLINE:
+            return vram.getUint16(base + (line * 4) + (plane * 2), false);
+        
+        default:
+            return 0;
+    }
 }
 
 let raf = function() {
@@ -161,29 +188,29 @@ let doFrame = function() {
     // And now the planes
     // No priority:
     first = true;
-    drawPlane((registers[RPLANEB_NT] & 0x07) << 13, false, dv); // B
+    drawPlane((registers[RPLANEB_NT] & 0x07) << 13, false, dv, B); // B
     first = false;
-    drawPlane((registers[RPLANEA_NT] & 0x38) << 10, false, dv); // A
+    drawPlane((registers[RPLANEA_NT] & 0x38) << 10, false, dv, A); // A
     drawSprites(registers[RSPRITE_NT] << 9, false, dv); // Sprites
     // Window
     
     // Priority:
-    drawPlane((registers[RPLANEB_NT] & 0x07) << 13, true, dv); // B
-    drawPlane((registers[RPLANEA_NT] & 0x38) << 10, true, dv); // A
+    drawPlane((registers[RPLANEB_NT] & 0x07) << 13, true, dv, B); // B
+    drawPlane((registers[RPLANEA_NT] & 0x38) << 10, true, dv, A); // A
     drawSprites(registers[RSPRITE_NT] << 9, true, dv); // Sprites
     // Window
     
     return displayBuffer;
 }
 
-let drawPlane = function(start, priority, view) {
+let drawPlane = function(start, priority, view, plane) {
     for(let y = 0; y < prows; y ++) {
         for(let x = 0; x < pcols; x ++) {
             let cell = vram.getUint16(start, false);
             start += 2;
             if(((cell & 0x8000) == 0x8000) == priority) {
                 // Priority is correct
-                drawTile(cell, x * 8, y * 8, view);
+                drawTile(cell, x * 8, y * 8, view, plane);
             }
         }
     }
@@ -201,7 +228,7 @@ let drawSprites = function(start, priority, view) {
             // Priority is correct
             for(let cx = 0; cx <= hsize; cx ++) {
                 for(let cy = 0; cy <= vsize; cy ++) {
-                    drawTile(cell, hpos - 128 + (cx * 8), vpos - 128 + (cy * 8), view);
+                    drawTile(cell, hpos - 128 + (cx * 8), vpos - 128 + (cy * 8), view, S);
                     cell ++;
                 }
             }
@@ -218,7 +245,7 @@ let drawSprites = function(start, priority, view) {
 }
 
 // x and y are coordinates exactly
-let drawTile = function(cell, x, y, view) {
+let drawTile = function(cell, x, y, view, plane) {
     let pmask = (cell >>> 9) & 0x0030;
     let i = (cell & 0x7ff) << 5; // Is this right?
     let hi = true;
@@ -227,6 +254,9 @@ let drawTile = function(cell, x, y, view) {
     
     for(let ys = 0; ys < 8; ys ++) {
         for(let xs = 0; xs < 8; xs ++) {
+            let xput = xs + getHScroll(plane, ybase + ys);
+            let yput = ys;
+            
             let value;
             if(hi) {
                 value = vram.getUint8(i) >>> 4;

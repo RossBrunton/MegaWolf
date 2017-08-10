@@ -2319,7 +2319,6 @@ export class M68k {
                 this.time += 12;
                 this.registers[PC] = this.emu.readMemory32(this.registers[SP]);
                 this.registers[SP] += 4;
-                this.log("Stack is now [0x"+this.registers[SP].toString(16)+"] "+this.emu.readMemory32(this.registers[SP]).toString(16))
                 
                 return true;
             }
