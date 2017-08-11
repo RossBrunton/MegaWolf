@@ -205,7 +205,7 @@ export class Emulator {
             return this.mainRam.getUint8(addr & 0x00ffff, false);
         }
         
-        return this.readMemory(addr) >>> 8;
+        return this.readMemory(addr) & 0xff;
     }
     
     writeMemory8(addr, value) {

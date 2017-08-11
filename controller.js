@@ -4,6 +4,7 @@ export class Controller {
     constructor() {
         this.control = 0;
         this.latch = 0;
+        this.lastDataWrite = 0x0000;
     }
     
     readControl(time) {
@@ -16,16 +17,17 @@ export class Controller {
     }
     
     readData(time) {
-        return (this.deviceReadData(time) & 0x7f) | this.control | this.latch;
+        return ((this.deviceReadData(time) & ~this.control & 0x7f) | (this.lastDataWrite & this.control) | this.latch) & 0xff;
     }
     
     writeData(value, time) {
-        if(this.value & 0x80) {
+        if(value & 0x80) {
             this.latch = 0x80;
         }else{
             this.latch = 0x00;
         }
         this.deviceWriteData(value & this.control);
+        this.lastDataWrite = value & this.control;
     }
     
     
