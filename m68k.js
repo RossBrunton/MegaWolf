@@ -1063,7 +1063,6 @@ export class M68k {
             }
             
             case ADD_ADDA: {
-                this.log("> add/adda");
                 let register = (instruction >> 9) & 0b111;
                 let opmode = (instruction >> 6) & 0b111;
                 let length = 0;
@@ -1080,6 +1079,7 @@ export class M68k {
                     let ea = makeSigned(this.readEa(effectiveAddress, length), length);
                     
                     this.registers[register] += ea;
+                    this.log("> adda"+lengthString(length)+" "+this.eaStr(effectiveAddress, length)+",a"+(register - ABASE));
                 }else{
                     // < ea > + Dn -> Dn / < ea >
                     let eaAddr = 0;
@@ -1103,10 +1103,12 @@ export class M68k {
                         // Destination is address
                         this.time += 4;
                         this.emu.writeMemoryN(eaAddr, tmp[0], length);
+                        this.log("> add"+lengthString(length)+" d"+(register)+","+this.eaStr(effectiveAddress, length));
                     }else{
                         // Destination is register
                         this.registers[register] &= ~lengthMask(length);
                         this.registers[register] |= tmp[0];
+                        this.log("> add"+lengthString(length)+" "+this.eaStr(effectiveAddress, length)+",d"+register);
                     }
                 }
                 
@@ -1597,7 +1599,7 @@ export class M68k {
                     register += ABASE;
                     let ea = this.readEa(effectiveAddress, length);
                     
-                    let reg = this.registers[register];
+                    let reg = this.registers[register] & lengthMask(length);
                     tmp[0] = reg;
                     tmp[0] -= ea;
                     
@@ -1610,7 +1612,7 @@ export class M68k {
                     let eaAddr = 0;
                     let ea = this.readEa(effectiveAddress, length);
                     
-                    let reg = this.registers[register];
+                    let reg = this.registers[register] & lengthMask(length);
                     tmp[0] = reg;
                     tmp[0] -= ea;
                     
@@ -1744,7 +1746,6 @@ export class M68k {
             }
             
             case EXT: {
-                this.log("> ext");
                 let reg = instruction & 0b111;
                 let dat = 0;
                 
@@ -1752,11 +1753,14 @@ export class M68k {
                     // Word > long
                     dat = makeSigned(this.registers[reg] & lengthMask(2), 2);
                     this.registers[reg] = dat & lengthMask(4);
+                    
+                    this.log("> ext.l d"+reg);
                 }else{
                     // Byte > word
                     dat = makeSigned(this.registers[reg] & lengthMask(1), 1);
                     this.registers[reg] &= ~lengthMask(2);
                     this.registers[reg] |= dat & lengthMask(2);
+                    this.log("> ext.w d"+reg);
                 }
                 
                 let ccr = this.registers[CCR] & X;
