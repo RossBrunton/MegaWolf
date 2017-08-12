@@ -306,6 +306,13 @@ let render = function(composeBuffer, displayBuffer) {
         // V counter
         registers[RV] = (y > 0xea) ? (y - 5) : y;
         
+        // H interrupt
+        if(registers[RM1] & 0x10) {
+            if(y % registers[RHORINT_C] == 0) {
+                registers[REX] = 0x4;
+            }
+        }
+        
         for(let x = 0; x < width; x ++) {
             registers[RH] = (x > 0xe9) ? (x - 0x56) : x;
             if(x > lblank) {
