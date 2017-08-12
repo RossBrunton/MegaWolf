@@ -171,6 +171,7 @@ let px, py; // On the plane
 let cx, cy; // On the canvas
 let background; // Background colour
 let first; // First plane?
+let lblank; // Blank the leftmost 8 pixels (0 = off, 8 = on)
 
 let doFrame = function() {
     // TODO: HV probably isn't 100% right
@@ -183,12 +184,14 @@ let doFrame = function() {
     pcols = getPlaneCols();
     width = cols * 8;
     height = rows * 8;
+    background = registers[RBACKGROUND] & 0x3f;
     let totalPx = (rows * 8) * (cols * 8);
     if(!displayBuffer || displayBuffer.byteLength != totalPx * 4) {
         if(displayBuffer) console.log("Recreating buffer " + displayBuffer.byteLength + " --> "+(totalPx * 4));
         displayBuffer = new ArrayBuffer(totalPx * 4);
         composeBuffer = new Uint8Array(totalPx);
     }
+    lblank = (registers[RM1] & 0x20) != 0 ? 8 : 0;
     
     // COMPOSE
     // Create a buffer of palette entries
@@ -283,7 +286,7 @@ let drawTile = function(cell, x, y, view, plane) {
             // Check if in range
             if(xs + xbase >= width) continue;
             if(ys + ybase >= height) continue;
-            if(xs + xbase < 0) continue;
+            if(xs + xbase < lblank) continue;
             if(ys + ybase < 0) continue;
             
             let px = pmask | value;
@@ -291,8 +294,7 @@ let drawTile = function(cell, x, y, view, plane) {
                 // All good? Drop the pixel
                 view[(xs + xbase) + ((ys + ybase) * width)] = px;
             }else if(first) {
-                // Put a background pixel down
-                view[(xs + xbase) + ((ys + ybase) * width)] = registers[RBACKGROUND] & 0x3f;
+                view[(xs + xbase) + ((ys + ybase) * width)] = background;
             }
         }
     }
@@ -306,7 +308,13 @@ let render = function(composeBuffer, displayBuffer) {
         
         for(let x = 0; x < width; x ++) {
             registers[RH] = (x > 0xe9) ? (x - 0x56) : x;
-            dv.setUint32(((y * width) + x) * 4, paletteRead(composeBuffer[(y * width) + x], false), false);
+            if(x > lblank) {
+                let px = composeBuffer[(y * width) + x];
+                let v = paletteRead(px & 0x3f, false);
+                dv.setUint32(((y * width) + x) * 4, v, false);
+            }else{
+                dv.setUint32(((y * width) + x) * 4, paletteRead(background, false), false);
+            }
         }
     }
 }
