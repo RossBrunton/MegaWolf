@@ -41,6 +41,9 @@ const HSCROLL_ALL = 0b00;
 const HSCROLL_TILE = 0b10;
 const HSCROLL_SCANLINE = 0b11;
 
+const VSCROLL_ALL = 0b0;
+const VSCROLL_TILE = 0b1;
+
 const A = 0;
 const B = 1;
 const S = 2;
@@ -106,6 +109,21 @@ let getPlaneRows = function() {
     return [32, 64, 64, 128][(registers[RPLANE_SIZE] >> 4) & 0b11];
 }
 
+let getVScroll = function(plane, col) {
+    if(plane == S) return 0;
+    
+    switch((registers[RM3] >> 2) & 0b11) {
+        case VSCROLL_ALL:
+            return vsram.getInt16(plane * 2, false);
+            
+        case VSCROLL_TILE:
+            return vsram.getInt16(~~(col / 8) * 4 + plane * 2, false);
+        
+        default:
+            return 0;
+    }
+}
+
 let getHScroll = function(plane, line) {
     // TODO: Each individual scanline has its own offest, not the whole tile
     if(plane == S) return 0;
@@ -113,13 +131,13 @@ let getHScroll = function(plane, line) {
     
     switch(registers[RM3] & 0b11) {
         case HSCROLL_ALL:
-            return vram.getUint16(base + (plane * 2), false);
+            return vram.getInt16(base + (plane * 2), false);
             
         case HSCROLL_TILE:
-            return vram.getUint16(base + (~~(line / 8) * 4) + (plane * 2), false);
+            return vram.getInt16(base + (~~(line / 8) * 4) + (plane * 2), false);
         
         case HSCROLL_SCANLINE:
-            return vram.getUint16(base + (line * 4) + (plane * 2), false);
+            return vram.getInt16(base + (line * 4) + (plane * 2), false);
         
         default:
             return 0;
@@ -150,8 +168,11 @@ let getFromPlane = function(x, y, plane) {
         base = (registers[RPLANEB_NT] & 0x07) << 13;
     }
     
-    while(x > pcols) x -= pcols;
+    while(x >= pcols) x -= pcols;
     while(x < 0) x += pcols;
+    
+    while(y >= prows) y -= prows;
+    while(y < 0) y += prows;
     
     let offset = ((y * pcols) + x) * 2;
     return base + offset;
@@ -243,12 +264,16 @@ let drawPlane = function(start, priority, view, plane) {
         for(let x = 0; x < pcols; x ++) {
             let scrollx = -getHScroll(plane, y);
             let tx = scrollx >> 3;
-            let txrem = (scrollx & 0b111) * (scrollx > 0 ? 1 : -1);
+            let txrem = (scrollx & 0b111) * -1;
             
-            let cell = vram.getUint16(getFromPlane(x + tx, y, plane), false);
+            let scrolly = getVScroll(plane, x);
+            let ty = scrolly >> 3;
+            let tyrem = -(scrolly & 0b111);
+            
+            let cell = vram.getUint16(getFromPlane(x + tx, y + ty, plane), false);
             if(((cell & 0x8000) == 0x8000) == priority) {
                 // Priority is correct
-                drawTile(cell, x * 8 + txrem, y * 8, view, plane);
+                drawTile(cell, x * 8 + txrem, y * 8 + tyrem, view, plane);
             }
         }
     }
