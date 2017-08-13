@@ -290,9 +290,18 @@ let drawSprites = function(start, priority, view) {
         
         if(((cell & 0x8000) == 0x8000) == priority) {
             // Priority is correct
+            let flipx = (cell & 0x0800) != 0;
+            let flipy = (cell & 0x1000) != 0;
+            
             for(let cx = 0; cx <= hsize; cx ++) {
                 for(let cy = 0; cy <= vsize; cy ++) {
-                    drawTile(cell, hpos - 128 + (cx * 8), vpos - 128 + (cy * 8), view, S);
+                    let dx = cx;
+                    let dy = cy;
+                    
+                    if(flipx) dx = hsize - dx;
+                    if(flipy) dy = vsize - dy;
+                    
+                    drawTile(cell, hpos - 128 + (dx * 8), vpos - 128 + (dy * 8), view, S);
                     cell ++;
                 }
             }
@@ -315,6 +324,8 @@ let drawTile = function(cell, x, y, view, plane) {
     let hi = true;
     let xbase = x;
     let ybase = y;
+    let flipx = (cell & 0x0800) != 0;
+    let flipy = (cell & 0x1000) != 0;
     
     for(let ys = 0; ys < 8; ys ++) {
         for(let xs = 0; xs < 8; xs ++) {
@@ -326,18 +337,24 @@ let drawTile = function(cell, x, y, view, plane) {
             }
             hi = !hi;
             
+            let dx = xs;
+            let dy = ys;
+            
+            if(flipx) dx = 7 - dx;
+            if(flipy) dy = 7 - dy;
+            
             // Check if in range
-            if(xs + xbase >= width) continue;
-            if(ys + ybase >= height) continue;
-            if(xs + xbase < lblank) continue;
-            if(ys + ybase < 0) continue;
+            if(dx + xbase >= width) continue;
+            if(dy + ybase >= height) continue;
+            if(dx + xbase < lblank) continue;
+            if(dy + ybase < 0) continue;
             
             let px = pmask | value;
             if(value) { // Check if not transparent
                 // All good? Drop the pixel
-                view[(xs + xbase) + ((ys + ybase) * width)] = px;
+                view[(dx + xbase) + ((dy + ybase) * width)] = px;
             }else if(first) {
-                view[(xs + xbase) + ((ys + ybase) * width)] = background;
+                view[(dx + xbase) + ((dy + ybase) * width)] = background;
             }
         }
     }
