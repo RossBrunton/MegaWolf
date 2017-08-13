@@ -303,4 +303,12 @@ export class Emulator {
         
         requestAnimationFrame(this.runTime.bind(this, factor));
     }
+    
+    clock() {
+        if(this.options.region == PAL) {
+            return PAL_CLOCK;
+        }else{
+            return NTSC_CLOCK;
+        }
+    }
 }

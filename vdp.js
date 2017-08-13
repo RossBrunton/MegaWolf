@@ -43,6 +43,8 @@ const VSRAM_R = 0b0100;
 const VSRAM_W = 0b0101;
 const CRAM_R = 0b1000;
 
+const DMA_BYTES_PER_SECOND = 3374789;
+
 let colours = function(x) {
     x = ~x;
     let ret = 0;
@@ -219,6 +221,13 @@ export class Vdp {
                 arr.setUint16(address, val, false);
                 address += this.registers[RAUTOINC];
             }
+            
+            // Calculate time taken in m68k cycles
+            let time = ((length / DMA_BYTES_PER_SECOND) * this.emu.clock())|0;
+            
+            // And advance the two timers
+            this.emu.time += time;
+            this.emu.m68k.time += time;
         }
     }
     
