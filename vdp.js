@@ -265,10 +265,31 @@ export class Vdp {
         return new ImageData(new Uint8ClampedArray(out.buffer), cols * 8);
     }
     
+    dumpHScroll() {
+        let width = 255;
+        let out = new DataView(new ArrayBuffer(width * 30 * 8 * 4));
+        
+        let base = this.registers[RHORSCROLL] << 10;
+        
+        for(let y = 0; y < 30 * 8 * 2; y ++) {
+            let val = -this.vram.getInt16(base + (y * 2), false) & 0xff;
+            
+            for(let x = 0; x < val; x ++) {
+                if(y & 0b1) {
+                    let old = out.getUint32((((y ^ 0b1) * width / 2) + x) * 4, false);
+                    out.setUint32((((y ^ 0b1) * width / 2) + x) * 4, old | 0xff0000ff, false);
+                }else{
+                    out.setUint32(((y * width / 2) + x) * 4, 0x0000ffff, false);
+                }
+            }
+        }
+        return new ImageData(new Uint8ClampedArray(out.buffer), width);
+    }
+    
     handleFrame() {
         this.worker.postMessage([MSG_RAF, null]);
         
-        document.querySelector("#vram").getContext("2d").putImageData(this.dumpVram(), 0, 0);
+        document.querySelector("#vram").getContext("2d").putImageData(this.dumpHScroll(), 0, 0);
     }
     
     interrupt() {

@@ -127,6 +127,7 @@ let getVScroll = function(plane, col) {
 let getHScroll = function(plane, line) {
     // TODO: Each individual scanline has its own offest, not the whole tile
     if(plane == S) return 0;
+    if(line >= height) return 0;
     let base = registers[RHORSCROLL] << 10;
     
     switch(registers[RM3] & 0b11) {
@@ -262,13 +263,13 @@ let doFrame = function() {
 let drawPlane = function(start, priority, view, plane) {
     for(let y = 0; y < prows; y ++) {
         for(let x = 0; x < pcols; x ++) {
-            let scrollx = -getHScroll(plane, y);
-            let tx = scrollx >> 3;
-            let txrem = (scrollx & 0b111) * -1;
-            
-            let scrolly = getVScroll(plane, x);
+            let scrolly = getVScroll(plane, x * 8);
             let ty = scrolly >> 3;
             let tyrem = -(scrolly & 0b111);
+            
+            let scrollx = -getHScroll(plane, y * 8);
+            let tx = scrollx >> 3;
+            let txrem = -(scrollx & 0b111);
             
             let cell = vram.getUint16(getFromPlane(x + tx, y + ty, plane), false);
             if(((cell & 0x8000) == 0x8000) == priority) {
