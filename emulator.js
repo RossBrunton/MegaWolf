@@ -54,6 +54,30 @@ export class Emulator {
     
     loadRom(rom) {
         this.rom = new DataView(rom);
+        
+        if(this.rom.getUint16(8) == 0xaabb) {
+            console.log("This looks like a .smd file, let me decode it for you...");
+            
+            let newBuff = new DataView(new ArrayBuffer(this.rom.byteLength - 512));
+            
+            for(let i = 512; i < this.rom.byteLength;) {
+                let e = i - 512;
+                let o = i + 1 - 512;
+                
+                for(let j = 0; j < 16 * 1024; j ++) {
+                    if(j < 8 * 1024) {
+                        newBuff.setUint8(o, this.rom.getUint8(i));
+                        o += 2;
+                    }else{
+                        newBuff.setUint8(e, this.rom.getUint8(i));
+                        e += 2;
+                    }
+                    i ++;
+                }
+            }
+            
+            this.rom = newBuff;
+        }
     }
     
     readMemory(addr) {
