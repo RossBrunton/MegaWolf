@@ -878,1593 +878,15 @@ export class M68k {
             }
         }
         
-        let noEffectiveAddress = instruction & 0xffc0;
         let effectiveAddress = instruction & ~0xffc0;
         
         this.log("-- Running instruction 0x" + instruction.toString(16) + " ("+opcode.toString()+") from 0x" + oldPc.toString(16));
         
-        switch(opcode) {
-            case MOVE_TO_CCR: {
-                this.log("> move to ccr");
-                
-                let val = this.readEa(effectiveAddress, 1);
-                this.registers[CCR] &= ~lengthMask(1);
-                this.registers[CCR] |= val;
-                
-                return true;
-            }
-            
-            case MOVE_FROM_SR: {
-                this.log("> move from sr");
-                let val = this.registers[SR] | this.registers[CCR];
-                
-                if(effectiveAddress & 0b111000) {
-                    // Memory
-                    let addr = this.addressEa(val, 2);
-                    this.emu.readMemory(addr);
-                    this.emu.writeMemory(addr, val);
-                    this.time += 4;
-                }else{
-                    // Register
-                    this.registers[effectiveAddress] &= 0xffff0000;
-                    this.registers[effectiveAddress] |= val;
-                    this.time += 2;
-                }
-                return true;
-            }
-            
-            case MOVE_TO_SR: {
-                this.log("> move to sr");
-                if(this.mode != SUPER) {
-                    this.trap(EX_PRIV_VIO);
-                }else{
-                    let val = this.readEa(effectiveAddress, 2);
-                    
-                    this.registers[CCR] = val & 0x00ff;
-                    this.registers[SR] = val & 0xff00;
-                    this.changeMode((val & S) ? SUPER : USER);
-                    this.time += 8;
-                }
-                return true;
-            }
-            
-            case NBCD: {
-                this.log("> nbcd");
-                console.error("NBCD not supported yet");
-                return false;
-            }
-            
-            case TST: {
-                let length = 1;
-                if(noEffectiveAddress == 0x4a40) {
-                    length = 2;
-                }else if(noEffectiveAddress == 0x4a80) {
-                    length = 4;
-                }
-                
-                let val = this.readEa(effectiveAddress, length);
-                
-                this.log("> tst"+lengthString(length) + " "+this.eaStr(effectiveAddress, length, oldPc));
-                
-                let ccr = this.registers[CCR] & X;
-                ccr |= val == 0 ? Z : 0;
-                ccr |= isNegative(val, length) ? N : 0;
-                this.registers[CCR] = ccr;
-                return true;
-            }
-            
-            case TAS: {
-                this.log("> tas");
-                
-                // TAS does nothing on a mega drive (at least, version 1 and 2
-                
-                return true;
-            }
-            
-            case JMP: {
-                this.registers[PC] = this.addressEa(effectiveAddress, 4);
-                this.time += 4;
-                
-                this.log("> jmp #$"+this.registers[PC].toString(16));
-                
-                return true;
-            }
-            
-            case JSR: {
-                let addr = this.addressEa(effectiveAddress, 4);
-                
-                this.registers[SP] -= 4;
-                this.emu.writeMemory32(this.registers[SP], this.registers[PC]);
-                
-                this.registers[PC] = addr;
-                this.time += 12;
-                
-                this.log("> jsr #$"+this.registers[PC].toString(16));
-                
-                return true;
-            }
-            
-            case ANDI_TO_CCR: {
-                let instruction2 = pcAndAdvance(2);
-                this.log("> andi to ccr");
-                this.time += 16;
-                this.registers[CCR] &= (instruction2 | 0xff00);
-                return true;
-            }
-            
-            case ORI_TO_CCR: {
-                let instruction2 = pcAndAdvance(2);
-                this.log("> ori to ccr");
-                this.time += 16;
-                this.registers[CCR] |= (instruction2 & 0xff);
-                return true;
-            }
-            
-            case EORI_TO_CCR: {
-                let instruction2 = pcAndAdvance(2);
-                this.log("> eori to ccr");
-                this.time += 16;
-                this.registers[CCR] ^= (instruction2 & 0x00ff);
-                return true;
-            }
-            
-            case ANDI_TO_SR:
-            case EORI_TO_SR:
-            case ORI_TO_SR: {
-                this.log("> andi/eori/ori to SR");
-                let op = this.pcAndAdvance(2);
-                if(this.mode != SUPER) {
-                    this.trap(EX_PRIV_VIO);
-                }else{
-                    let val = this.registers[SR] | this.registers[CCR];
-                    
-                    switch(instruction) {
-                        case 0x027c: val &= tmp; break; // andi
-                        case 0x0a7c: val ^= tmp; break; // eori
-                        case 0x007c: val |= tmp; break; // ori;
-                        default: console.error("andi/eori/ori... How did I get here?"); break;
-                    }
-                    
-                    this.registers[CCR] = val & 0x00ff;
-                    this.registers[SR] = val & 0xff00;
-                    this.changeMode((val & S) ? SUPER : USER);
-                    this.time += 16;
-                }
-                return true;
-            }
-            
-            case ABCD: {
-                this.log("> abcd");
-                console.error("ABCD opcode not yet supported.");
-                return false;
-            }
-            
-            case ADD_ADDA: {
-                let register = (instruction >> 9) & 0b111;
-                let opmode = (instruction >> 6) & 0b111;
-                let length = 0;
-                let tmp;
-                let addr = false;
-                
-                [length, tmp] = getOperandLength(instruction, true);
-                
-                // Do the math
-                if((opmode & 0b011) == 0b011) {
-                    // < ea > + An -> An
-                    this.time += 4;
-                    register += ABASE;
-                    let ea = makeSigned(this.readEa(effectiveAddress, length), length);
-                    
-                    this.registers[register] += ea;
-                    this.log("> adda"+lengthString(length)+" "+this.eaStr(effectiveAddress, length)+",a"+(register - ABASE));
-                }else{
-                    // < ea > + Dn -> Dn / < ea >
-                    let eaAddr = 0;
-                    let ea = 0;
-                    if(opmode & 0b100) {
-                        // Destination is address
-                        eaAddr = this.addressEa(effectiveAddress, length);
-                        ea = this.emu.readMemoryN(eaAddr, length);
-                    }else{
-                        // Destination is register
-                        ea = this.readEa(effectiveAddress, length);
-                    }
-                    
-                    let reg = this.registers[register] & lengthMask(length);
-                    tmp[0] = ea;
-                    tmp[0] += reg;
-                    
-                    this.registers[CCR] = addCcr(ea, reg, tmp[0], length);
-                    
-                    if(opmode & 0b100) {
-                        // Destination is address
-                        this.time += 4;
-                        this.emu.writeMemoryN(eaAddr, tmp[0], length);
-                        this.log("> add"+lengthString(length)+" d"+(register)+","+this.eaStr(effectiveAddress, length));
-                    }else{
-                        // Destination is register
-                        this.registers[register] &= ~lengthMask(length);
-                        this.registers[register] |= tmp[0];
-                        this.log("> add"+lengthString(length)+" "+this.eaStr(effectiveAddress, length)+",d"+register);
-                    }
-                }
-                
-                return true;
-            }
-            
-            case ADDI:
-            case ADDQ: {
-                let length = 0;
-                let immediate = 0;
-                let tmp;
-                let q = (instruction & 0xf100) == 0x5000;
-                switch(instruction & 0x00c0) {
-                    case 0x0000:
-                        length = 1;
-                        if(!q) {
-                            immediate = this.pcAndAdvance(1);
-                        }
-                        tmp = u8;
-                        break;
-                    case 0x0040:
-                        length = 2;
-                        if(!q) {
-                            immediate = this.pcAndAdvance(2);
-                        }
-                        tmp = u16;
-                        break;
-                    case 0x0080:
-                        length = 4;
-                        if(!q) {
-                            immediate = this.pcAndAdvance(4);
-                        }
-                        tmp = u32;
-                        break;
-                }
-                
-                if(q) {
-                    immediate = (instruction >> 9) & 0b111;
-                    if(immediate == 0) immediate = 8;
-                }
-                
-                if((effectiveAddress & 0b111000) == 0b000000) {
-                    // To data register
-                    let reg = this.registers[effectiveAddress] & lengthMask(length);
-                    tmp[0] = reg;
-                    tmp[0] += immediate;
-                    
-                    this.registers[CCR] = addCcr(immediate, reg, tmp[0], length);
-                    
-                    if(length == 4) {
-                        this.time += 4;
-                    }
-                    
-                    this.registers[effectiveAddress] &= ~lengthMask(length);
-                    this.registers[effectiveAddress] |= tmp[0];
-                }else if((effectiveAddress & 0b111000) == 0b001000) {
-                    // To address register
-                    if(!q) {
-                        console.error("Tried to add to an address register!");
-                        return false;
-                    }
-                    this.time += 4;
-                    this.registers[effectiveAddress] += immediate;
-                }else{
-                    // To memory address
-                    let addr = this.addressEa(effectiveAddress, length);
-                    let ea = this.emu.readMemoryN(addr, length);
-                    tmp[0] = ea;
-                    tmp[0] += immediate;
-                    
-                    if(q) {
-                        this.time -= 8;
-                    }
-                    
-                    this.registers[CCR] = addCcr(immediate, ea, tmp[0], length);
-                    
-                    this.emu.writeMemoryN(addr, tmp[0], length);
-                }
-                
-                if(q) {
-                    this.log("> addq"+lengthString(length)+
-                        " #$"+immediate.toString(16)+","+this.eaStr(effectiveAddress, length, oldPc));
-                }else{
-                    this.log("> addi"+lengthString(length)+
-                        " #$"+immediate.toString(16)+","+this.eaStr(effectiveAddress, length, oldPc));
-                }
-                
-                return true;
-            }
-            
-            case ADDX: {
-                this.log("> addx");
-                console.error("ADDX opcode not yet supported.");
-                return false;
-            }
-            
-            case AND:
-            case EOR:
-            case OR: {
-                let register = (instruction >> 9) & 0b111;
-                let opmode = (instruction >> 6) & 0b111;
-                let length = 0;
-                let tmp;
-                
-                [length, tmp] = getOperandLength(instruction, false);
-                
-                let istr = "???";
-                switch(instruction & 0xf000) {
-                    case 0xc000: istr = "and"; break;
-                    case 0xb000: istr = "eor"; break;
-                    case 0x8000: istr = "or"; break;
-                }
-                
-                // Do the math
-                let eaAddr = 0;
-                let ea = 0;
-                if(opmode & 0b100) {
-                    // -> < ea >
-                    if((effectiveAddress & 0b111000) == 0) {
-                        // Register
-                        ea = this.registers[effectiveAddress];
-                    }else{
-                        // Memory
-                        eaAddr = this.addressEa(effectiveAddress, length);
-                        ea = this.emu.readMemoryN(eaAddr, length);
-                        this.time += 4;
-                    }
-                }else{
-                    // -> r
-                    ea = this.readEa(effectiveAddress, length);
-                }
-                
-                let reg = this.registers[register];
-                tmp[0] = ea;
-                switch(instruction & 0xf000) {
-                    case 0xc000: tmp[0] &= reg; break; // and
-                    case 0xb000: tmp[0] ^= reg; break; // eor
-                    case 0x8000: tmp[0] |= reg; break; // or
-                    default: console.error("and/eor/or... How did I get here?");
-                }
-                
-                let ccr = this.registers[CCR] & X;
-                ccr |= (tmp[0] & (1 << ((length * 8) - 1))) ? N : 0;
-                ccr |= tmp[0] == 0 ? Z : 0;
-                this.registers[CCR] = ccr;
-                
-                if(opmode & 0b100) {
-                    // -> < ea >
-                    if(length == 4) {
-                        this.time += 2;
-                        if((instruction & 0xf000) == 0xb000) {
-                            // eor
-                            this.time += 2;
-                        }
-                    }
-                    
-                    if((effectiveAddress & 0b111000) == 0) {
-                        // Register
-                        this.registers[effectiveAddress] = (this.registers[effectiveAddress] & ~lengthMask(length)) | tmp[0];
-                    }else{
-                        // Address
-                        this.time += 4;
-                        if(length == 4) this.time += 4;
-                        
-                        this.emu.writeMemoryN(eaAddr, tmp[0], length);
-                    }
-                    
-                    this.log("> "+istr+lengthString(length)+" d"+register+","+this.eaStr(effectiveAddress, length, oldPc));
-                }else{
-                    // -> r
-                    this.registers[register] = (this.registers[register] & ~lengthMask(length)) | tmp[0];
-                    if((instruction & 0xf000) == 0xb000) {
-                        // eor
-                        console.error("Tried to write the result of an eor to non EA destination.");
-                        return false;
-                    }
-                    this.log("> "+istr+lengthString(length)+" "+this.eaStr(effectiveAddress, length, oldPc)+",d"+register);
-                }
-                
-                return true;
-            }
-            
-            case ANDI:
-            case EORI:
-            case ORI: {
-                let [length, immediate, tmp] = this.getImmediate(instruction);
-                
-                let istr = "???";
-                switch(instruction & 0xff00) {
-                    case 0x0200: istr = "andi"; break;
-                    case 0x0a00: istr = "eori"; break;
-                    case 0x0000: istr = "ori"; break;
-                }
-                
-                if((effectiveAddress & 0b111000) == 0b000000) {
-                    // To data register
-                    let reg = this.registers[effectiveAddress] & lengthMask(length);
-                    let val = immediate;
-                    
-                    switch(instruction & 0xff00) {
-                        case 0x0200: val &= reg; break; // andi
-                        case 0x0a00: val ^= reg; break; // eori
-                        case 0x0000: val |= reg; break; // ori
-                        default: console.error("andi/eori/ori... How did I get here?");
-                    }
-                    
-                    val &= lengthMask(length);
-                    
-                    this.registers[effectiveAddress] &= ~lengthMask(length);
-                    this.registers[effectiveAddress] |= val;
-                    
-                    let ccr = this.registers[CCR] & X;
-                    ccr |= isNegative(val, length) ? N : 0;
-                    ccr |= val == 0 ? Z : 0;
-                    this.registers[CCR] = ccr;
-                    
-                    if(length == 4) this.time += 4;
-                    this.log("> "+istr+lengthString(length)+" #$"+immediate.toString(16)+",d"+effectiveAddress);
-                }else{
-                    // To memory address
-                    let addr = this.addressEa(effectiveAddress, length);
-                    let ea = this.emu.readMemoryN(addr, length);
-                    tmp[0] = immediate;
-                    switch(instruction & 0xff00) {
-                        case 0x0200: tmp[0] &= ea; break; // andi
-                        case 0x0a00: tmp[0] ^= ea; break; // eori
-                        case 0x0000: tmp[0] |= ea; break; // ori
-                        default: console.error("andi/eori/ori... How did I get here?");
-                    }
-                    
-                    let ccr = this.registers[CCR] & X;
-                    ccr |= isNegative(tmp[0], length) ? N : 0;
-                    ccr |= (tmp[0]) == 0 ? Z : 0;
-                    this.registers[CCR] = ccr;
-                    
-                    this.time += 4;
-                    if(length == 4) this.time += 4;
-                    this.emu.writeMemoryN(addr, tmp[0], length);
-                    
-                    this.log("> "+istr+lengthString(length)+
-                        " #$"+immediate.toString(16)+","+this.eaStr(effectiveAddress, length, oldPc));
-                }
-                
-                return true;
-            }
-            
-            case SHIFT_MEM:
-            case SHIFT_REG: {
-                this.log("> asl/asr/lsl/lsr");
-                let size = (instruction >> 6) & 0b11;
-                let register = (instruction & 0x0020) != 0;
-                let logical;
-                
-                let [cr, left, length, regNo] = this.getShift(instruction);
-                
-                if(size == 0b11) {
-                    // Memory shift
-                    let addr = this.addressEa(effectiveAddress, 2);
-                    this.time += 4;
-                    
-                    logical = (instruction & 0x0200) != 0;
-                    
-                    let val = this.emu.readMemory(addr);
-                    let xc;
-                    let v;
-                    if(left) {
-                        xc = val >> 15;
-                        v = !((val & 0xc000) == 0x0 || (val & 0xc000) == 0xc000);
-                        val <<= 1;
-                    }else{
-                        xc = val & 0x0001;
-                        v = 0; // MSB never changes since it is propagated
-                        if(logical) {
-                            val >>>= 1;
-                        }else{
-                            value = makeSigned(value, 2);
-                            val >>= 1;
-                        }
-                    }
-                    
-                    this.emu.writeMemory(addr, val);
-                    
-                    let ccr = 0;
-                    ccr |= xc ? (C | X) : 0;
-                    ccr |= isNegative(val, 2) ? N : 0;
-                    ccr |= (val & 0xffff) == 0 ? Z : 0;
-                    ccr |= (v && !logical) ? V : 0;
-                    this.registers[CCR] = ccr;
-                }else{
-                    // Register shift
-                    logical = (instruction & 0b1000) != 0;
-                    
-                    this.time += 2 + (2 * cr);
-                    if(length == 4) this.time += 2;
-                    
-                    let value = this.registers[regNo] & lengthMask(length);
-                    let xc;
-                    let v;
-                    
-                    if(cr) {
-                        if(left) {
-                            xc = (value & (0x1 << ((length * 8) - 1) >>> (cr - 1))) != 0;
-                            let vmask = lengthMask(length) & ~(lengthMask(length) >>> cr);
-                            v = !((value & vmask) == vmask || (value & vmask) == 0);
-                            value <<= cr;
-                        }else{
-                            // Right
-                            xc = (value & (0x1 << (cr - 1))) != 0;
-                            v = 0; // MSB never changes since it is propagated
-                            if(logical) {
-                                value >>>= cr;
-                            }else{
-                                value = makeSigned(value, length);
-                                value >>= cr;
-                            }
-                        }
-                        
-                        this.registers[regNo] = (this.registers[regNo] & ~lengthMask(length)) | (value & lengthMask(length));
-                        
-                        let ccr = 0;
-                        ccr |= xc ? (C | X) : 0;
-                        ccr |= isNegative(value, length) ? N : 0;
-                        ccr |= value == 0 ? Z : 0;
-                        ccr |= (v && !logical) ? V : 0;
-                        this.registers[CCR] = ccr;
-                    }else{
-                        let ccr = this.registers[CCR];
-                        ccr &= X;
-                        ccr |= isNegative(value, length) ? N : 0;
-                        ccr |= value == 0 ? Z : 0;
-                        this.registers[CCR] = ccr;
-                    }
-                }
-                
-                return true;
-            }
-            
-            case BMOD_REG:
-            case BMOD_IMM: { // btst/bchg/bclr/bset
-                let chg = (instruction & 0x00c0) == 0x0040;
-                let clr = (instruction & 0x00c0) == 0x0080;
-                let set = (instruction & 0x00c0) == 0x00c0;
-                
-                let bitNo;
-                let rstr = "";
-                if(instruction & 0x0100) {
-                    // Register
-                    bitNo = this.registers[(instruction >> 9) & 0b111];
-                    rstr = "r"+((instruction >> 9) & 0b111);
-                }else{
-                    // Immediate
-                    bitNo = this.pcAndAdvance(1);
-                    rstr = "#$"+bitNo.toString(16);
-                }
-                
-                let mask;
-                let value;
-                if((effectiveAddress & 0b111000) == 0b000000) {
-                    // Register
-                    mask = 1 << (bitNo % 32);
-                    value = this.registers[effectiveAddress];
-                    
-                    if(chg) {
-                        this.registers[effectiveAddress] ^= mask;
-                    }else if(clr) {
-                        this.time += 2;
-                        this.registers[effectiveAddress] &= ~mask;
-                    }else if(set) {
-                        this.registers[effectiveAddress] |= mask;
-                    }else{
-                        this.time -= 2;
-                    }
-                }else{
-                    // Address
-                    mask = 1 << (bitNo % 8);
-                    let addr = this.addressEa(effectiveAddress, 1)
-                    value = this.emu.readMemory8(addr);
-                    this.time += 4;
-                    
-                    if(chg) {
-                        this.emu.writeMemory8(addr, value ^ mask);
-                    }else if(clr) {
-                        this.emu.writeMemory8(addr, value & ~mask);
-                    }else if(set) {
-                        this.emu.writeMemory8(addr, value | mask);
-                    }else{
-                        this.time -= 4;
-                    }
-                }
-                
-                let ccr = this.registers[CCR];
-                ccr &= ~Z;
-                ccr |= (value & mask) ? 0 : Z;
-                this.registers[CCR] = ccr;
-                
-                let name = "btst";
-                if(chg) {
-                    name = "bchg";
-                }else if(clr) {
-                    name = "bclr";
-                }else if(set) {
-                    name = "bset";
-                }
-                
-                this.log("> "+name+" "+rstr+","+this.eaStr(effectiveAddress, 1, oldPc));
-                
-                return true;
-            }
-            
-            case DBCC: {
-                let reg = instruction & 0b111;
-                let condition = (instruction >> 8) & 0b1111;
-                let displacement = this.pcAndAdvance(2);
-                
-                this.time += 6;
-                
-                this.log("> db"+conditionStr(condition) + " d" + reg + ",#$" + makeSigned(displacement, 2).toString(16));
-                
-                if(!doCondition(condition, this.registers[CCR])) {
-                    let newVal = makeSigned((this.registers[reg] & 0x0000ffff), 2) - 1;
-                    this.registers[reg] = (this.registers[reg] & 0xffff0000) | (newVal & 0x0000ffff);
-                    if(newVal != -1) {
-                        this.registers[PC] = oldPc + makeSigned(displacement, 2) + 2;
-                        this.log("Continuing loop to 0x" + this.registers[PC].toString(16));
-                        this.time -= 4;
-                    }else{
-                        this.time -= 2;
-                    }
-                }
-                
-                return true;
-            }
-            
-            case CHK: {
-                this.log("> chk");
-                this.time += 6;
-                let register = (instruction >> 9) & 0b111;
-                let upper = makeSigned(this.readEa(effectiveAddress, 2), 2);
-                let comp = makeSigned(this.registers[register] & lengthMask(2), 2);
-                
-                if(comp < 0 || comp > upper) {
-                    let ccr = this.registers[CCR] & X;
-                    ccr |= (comp < 0) ? N : 0;
-                    this.registers[CCR] = ccr;
-                    
-                    this.trap(EX_CHK);
-                }
-            }
-            
-            case CLR: {
-                this.log("> clr");
-                let [length, tmp] = getOperandLength(instruction, false);
-                
-                if((effectiveAddress & 0b111000) == 0b000000) {
-                    // Register
-                    this.registers[effectiveAddress] &= ~lengthMask(length);
-                    if(length == 4) this.time += 2;
-                }else{
-                    // Address
-                    let addr = this.addressEa(effectiveAddress, length);
-                    this.emu.readMemoryN(addr, length); // A read still occurs according to the manual
-                    this.emu.writeMemoryN(addr, 0, length);
-                    this.time += 4;
-                    if(length == 4) this.time += 4;
-                }
-                
-                let ccr = this.registers[CCR] & X;
-                ccr |= Z;
-                this.registers[CCR] = ccr;
-                
-                return true;
-            }
-            
-            case CMP_CMPA: {
-                this.log("> cmp/cmpa");
-                let register = (instruction >> 9) & 0b111;
-                let opmode = (instruction >> 6) & 0b111;
-                let length = 0;
-                let tmp;
-                let addr = false;
-                
-                [length, tmp] = getOperandLength(instruction, true);
-                
-                // Do the math
-                if((opmode & 0b011) == 0b011) {
-                    // An - < ea >
-                    this.time += 2;
-                    register += ABASE;
-                    let ea = this.readEa(effectiveAddress, length);
-                    
-                    let reg = this.registers[register] & lengthMask(length);
-                    tmp[0] = reg;
-                    tmp[0] -= ea;
-                    
-                    this.registers[CCR] = this.subCcr(reg, ea, tmp[0], length);
-                }else{
-                    // Dn - < ea >
-                    if(length == 4) {
-                        this.time += 2;
-                    }
-                    let eaAddr = 0;
-                    let ea = this.readEa(effectiveAddress, length);
-                    
-                    let reg = this.registers[register] & lengthMask(length);
-                    tmp[0] = reg;
-                    tmp[0] -= ea;
-                    
-                    this.registers[CCR] = this.subCcr(reg, ea, tmp[0], length);
-                }
-                
-                return true;
-            }
-            
-            case CMPM: {
-                this.log("> cmpm");
-                let src = instruction & 0b111;
-                let dst = (instruction >> 9) & 0b111;
-                let length = 0;
-                let tmp;
-                let sm;
-                let dm;
-                
-                [length, tmp] = getOperandLength(instruction, true);
-                
-                sm = this.readEa(0b011000 & src, length);
-                dm = this.readEa(0b011000 & dst, length);
-                
-                tmp[0] = dm;
-                tmp[0] -= sm;
-                
-                this.registers[CCR] = this.subCcr(dm, sm, tmp[0], length, false);
-                
-                return true;
-            }
-            
-            case CMPI: {
-                let [length, immediate, tmp] = this.getImmediate(instruction);
-                
-                if(length == 4 && (effectiveAddress & 0b111000) == 0) {
-                    this.time += 2;
-                }
-                
-                let ea = this.readEa(effectiveAddress, length);
-                tmp[0] = ea;
-                tmp[0] -= immediate;
-                
-                this.registers[CCR] = this.subCcr(ea, immediate, tmp[0], length);
-                
-                this.log("> cmpi" + lengthString(length) +
-                    " #$"+immediate.toString(16) + "," + this.eaStr(effectiveAddress, length, oldPc));
-                
-                return true;
-            }
-            
-            case DIVS: {
-                this.log("> divs");
-                this.time += 154;
-                let source = makeSigned(this.readEa(effectiveAddress, 2), 2);
-                let reg = (instruction >> 9) & 0b111;
-                let dest = makeSigned(this.registers[reg], 4); // "divides a long word by a word"
-                
-                if(source == 0) {
-                    this.trap(EX_DIV0);
-                    return true;
-                }
-                
-                let result = ~~(dest / source);
-                let remainder = (dest % source) * (dest < 0 ? -1 : 1);
-                
-                let ccr = this.registers[CCR] & X;
-                ccr |= result == 0 ? Z : 0;
-                ccr |= result < 0 ? N : 0;
-                if((result > 0x7fff) || (result < -0x7fff)) {
-                    // Overflow!
-                    ccr |= V;
-                }else{
-                    this.registers[reg] = ((remainder & 0xffff) << 16) | (result & 0xffff);
-                }
-                
-                this.registers[CCR] = ccr;
-                
-                return true;
-            }
-            
-            case DIVU: {
-                this.log("> divu");
-                this.time += 136;
-                let source = this.readEa(effectiveAddress, 2);
-                let reg = (instruction >> 9) & 0b111;
-                let dest = this.registers[reg]; // "divides a long word by a word"
-                
-                if(source == 0) {
-                    this.trap(EX_DIV0);
-                    return true;
-                }
-                
-                let result = dest / source;
-                let remainder = dest % source;
-                
-                let ccr = this.registers[CCR] & X;
-                ccr |= result == 0 ? Z : 0;
-                ccr |= result < 0 ? N : 0;
-                if(result > 0xffff) {
-                    // Overflow!
-                    ccr |= V;
-                }else{
-                    this.registers[reg] = ((remainder & 0xffff) << 16) | (result & 0xffff);
-                }
-                
-                this.registers[CCR] = ccr;
-                
-                return true;
-            }
-            
-            case EXG: {
-                this.log("> exg");
-                this.time += 2;
-                let mode = (instruction >> 3) & 0b11111;
-                let rx = (instruction >> 9) & 0b111;
-                let ry = instruction & 0b111;
-                
-                if((mode & 0b1) == 0b1) {
-                    ry += ABASE;
-                }
-                
-                if(mode == 0b01001) {
-                    rx += ABASE;
-                }
-                
-                let tmp = this.registers[ry];
-                this.registers[ry] = this.registers[rx];
-                this.registers[rx] = tmp;
-                
-                return true;
-            }
-            
-            case EXT: {
-                let reg = instruction & 0b111;
-                let dat = 0;
-                
-                if(instruction & 0x0040) {
-                    // Word > long
-                    dat = makeSigned(this.registers[reg] & lengthMask(2), 2);
-                    this.registers[reg] = dat & lengthMask(4);
-                    
-                    this.log("> ext.l d"+reg);
-                }else{
-                    // Byte > word
-                    dat = makeSigned(this.registers[reg] & lengthMask(1), 1);
-                    this.registers[reg] &= ~lengthMask(2);
-                    this.registers[reg] |= dat & lengthMask(2);
-                    this.log("> ext.w d"+reg);
-                }
-                
-                let ccr = this.registers[CCR] & X;
-                ccr |= dat == 0 ? Z : 0;
-                ccr |= dat < 0 ? N : 0;
-                this.registers[CCR] = ccr;
-                return true;
-            }
-            
-            case ILLEGAL: {
-                this.log("> illegal");
-                
-                this.trap(EX_ILLEGAL);
-                return true;
-            }
-            
-            case LEA: {
-                this.log("> lea");
-                // TODO: Use only supported modes
-                let reg = (instruction & 0x0e00) >>> 9;
-                this.registers[ABASE + reg] = this.addressEa(effectiveAddress, 4);
-                return true;
-            }
-            
-            case LINK: {
-                this.log("> link");
-                let reg = (instruction & 0b111) + ABASE;
-                let displacement = makeSigned(this.pcAndAdvance(2), 2);
-                
-                this.registers[SP] -= 4;
-                this.emu.writeMemory(this.registers[SP], this.registers[reg], 4);
-                this.registers[reg] = this.registers[SP];
-                this.registers[SP] += displacement;
-                return true;
-            }
-            
-            case MOVEQ: {
-                let data = instruction & 0x00ff;
-                let reg = (instruction >> 9) & 0b111;
-                
-                this.registers[reg] = makeSigned(data, 1);
-                
-                let ccr = this.registers[CCR] & X;
-                ccr |= isNegative(this.registers[reg], 4) ? N : 0;
-                ccr |= this.registers[reg] == 0 ? Z : 0;
-                this.registers[CCR] = ccr;
-                
-                this.log("> moveq #$"+data.toString(16)+",d"+reg);
-                
-                return true;
-            }
-            
-            case MOVEP: {
-                this.log("> movep");
-                console.error("MOVEP not supported");
-            }
-            
-            case MULS: {
-                this.log("> muls");
-                let register = (instruction >> 9) & 0b111;
-                this.time += 66;
-                
-                let a = makeSigned(this.readEa(effectiveAddress, 2), 2);
-                let b = makeSigned(this.registers[register] & 0xffff, 2);
-                let result = a * b;
-                
-                this.registers[register] = result;
-                
-                let ccr = this.registers[CCR] & X;
-                ccr |= result == 0 ? Z : 0;
-                ccr |= result < 0 ? N : 0;
-                this.registers[CCR] = ccr;
-                
-                return true;
-            }
-            
-            case MULU: {
-                this.log("> mulu");
-                let register = (instruction >> 9) & 0b111;
-                this.time += 66;
-                
-                let a = this.readEa(effectiveAddress, 2);
-                let b = this.registers[register] & 0xffff;
-                let result = a * b;
-                
-                this.registers[register] = result;
-                
-                let ccr = this.registers[CCR] & X;
-                ccr |= result == 0 ? Z : 0;
-                ccr |= (result & 0x80000000) ? N : 0;
-                this.registers[CCR] = ccr;
-                
-                return true;
-            }
-            
-            case MOVE_USP: {
-                this.log("> move usp");
-                if(this.mode == USER) {
-                    this.trap(EX_PRIV_VIO);
-                }else{
-                    let reg = ABASE + (instruction & 0b111);
-                    
-                    if(instruction & 0x0080) {
-                        // Stack > address
-                        this.registers[reg] = this.oldSp;
-                    }else{
-                        // Address > stack
-                        this.oldSp = this.registers[reg];
-                    }
-                }
-                return true;
-            }
-            
-            case NEG:
-            case NEGX: {
-                this.log("> neg/negx");
-                let [length, tmp] = getOperandLength(instruction, false);
-                let x = (instruction & 0x0400) == 0;
-                let xdec = (x && (this.registers[CCR] & X)) ? 1 : 0;
-                
-                tmp[0] = 0;
-                if(effectiveAddress & 0b111000) {
-                    // Memory location
-                    let addr = this.addressEa(effectiveAddress, length);
-                    let val = this.emu.readMemoryN(addr, length);
-                    
-                    tmp[0] -= val;
-                    
-                    this.registers[CCR] = this.subCcr(0, val, tmp[0], length, true, x);
-                    
-                    tmp[0] -= xdec;
-                    
-                    this.emu.writeMemoryN(addr, tmp[0], length);
-                    this.time += 4;
-                    if(length == 4) this.time += 4;
-                }else{
-                    // Register
-                    let val = this.registers[effectiveAddress] & lengthMask(length);
-                    
-                    tmp[0] -= val;
-                    
-                    this.registers[CCR] = this.subCcr(0, val, tmp[0], length, true, x);
-                    
-                    tmp[0] -= xdec;
-                    
-                    this.registers[effectiveAddress] &= ~lengthMask(length);
-                    this.registers[effectiveAddress] |= tmp[0];
-                    
-                    if(length == 4) this.time += 2;
-                }
-                
-                return true;
-            }
-            
-            case PEA: {
-                this.log("> pea");
-                
-                this.registers[SP] -= 4;
-                this.emu.writeMemory32(this.registers[SP], this.addressEa(effectiveAddress, 4), 4);
-                return true;
-            }
-            
-            case SUB_SUBA: {
-                this.log("> sub/suba");
-                let register = (instruction >> 9) & 0b111;
-                let opmode = (instruction >> 6) & 0b111;
-                let length = 0;
-                let tmp;
-                
-                [length, tmp] = getOperandLength(instruction, true);
-                
-                // Do the math
-                if((opmode & 0b011) == 0b011) {
-                    // < ea > - An -> An
-                    this.time += 4;
-                    register += ABASE;
-                    let ea = makeSigned(this.readEa(effectiveAddress, length), length);
-                    
-                    this.registers[register] -= ea;
-                }else{
-                    // < ea > + Dn -> Dn / < ea >
-                    let eaAddr = 0;
-                    let ea = 0;
-                    let reg = this.registers[register] & lengthMask(length);
-                    
-                    if(opmode & 0b100) {
-                        // < ea > - dn -> < ea >
-                        eaAddr = this.addressEa(effectiveAddress, length);
-                        ea = this.emu.readMemoryN(eaAddr, length);
-                        tmp[0] = ea;
-                        tmp[0] -= reg;
-                        
-                        this.registers[CCR] = this.subCcr(ea, reg, tmp[0], length, true);
-                        
-                        this.time += 4;
-                        this.emu.writeMemoryN(eaAddr, tmp[0], length);
-                    }else{
-                        // dn - < ea > -> dn
-                        ea = this.readEa(effectiveAddress, length);
-                        
-                        tmp[0] = reg;
-                        tmp[0] -= ea;
-                        
-                        this.registers[CCR] = this.subCcr(reg, ea, tmp[0], length, true);
-                        
-                        this.registers[register] &= ~lengthMask(length);
-                        this.registers[register] |= tmp[0];
-                    }
-                }
-                
-                return true;
-            }
-            
-            case SUBX: {
-                this.log("> subx");
-                console.error("SUBX opcode not yet supported.");
-                return false;
-            }
-            
-            case SUBI:
-            case SUBQ: {
-                let length = 0;
-                let immediate = 0;
-                let tmp;
-                let q = (instruction & 0xf100) == 0x5100;
-                switch(instruction & 0x00c0) {
-                    case 0x0000:
-                        length = 1;
-                        if(!q) {
-                            immediate = this.pcAndAdvance(1);
-                        }
-                        tmp = u8;
-                        break;
-                    case 0x0040:
-                        length = 2;
-                        if(!q) {
-                            immediate = this.pcAndAdvance(2);
-                        }
-                        tmp = u16;
-                        break;
-                    case 0x0080:
-                        length = 4;
-                        if(!q) {
-                            immediate = this.pcAndAdvance(4);
-                        }
-                        tmp = u32;
-                        break;
-                }
-                
-                if(q) {
-                    immediate = (instruction >> 9) & 0b111;
-                    if(immediate == 0) immediate = 8;
-                }
-                
-                if((effectiveAddress & 0b111000) == 0b000000) {
-                    // To data register
-                    let reg = this.registers[effectiveAddress] & lengthMask(length);
-                    tmp[0] = reg;
-                    tmp[0] -= immediate;
-                    
-                    this.registers[CCR] = this.subCcr(reg, immediate, tmp[0], length, true);
-                    
-                    if(length == 4) {
-                        this.time += 4;
-                    }
-                    
-                    this.registers[effectiveAddress] &= ~lengthMask(length);
-                    this.registers[effectiveAddress] |= tmp[0];
-                }else if((effectiveAddress & 0b111000) == 0b001000) {
-                    // To address register
-                    if(!q) {
-                        console.error("Tried to subtract from address register!");
-                        return false;
-                    }
-                    this.time += 4;
-                    this.registers[effectiveAddress] -= immediate;
-                }else{
-                    // To memory address
-                    let addr = this.addressEa(effectiveAddress, length);
-                    let ea = this.emu.readMemoryN(addr, length);
-                    tmp[0] = ea;
-                    tmp[0] -= immediate;
-                    
-                    if(q) {
-                        this.time -= 8;
-                    }
-                    
-                    this.registers[CCR] = this.subCcr(ea, immediate, tmp[0], length, true);
-                    
-                    this.emu.writeMemoryN(addr, tmp[0], length);
-                }
-                
-                if(q) {
-                    this.log("> subq"+lengthString(length)+
-                        " #$"+immediate.toString(16)+","+this.eaStr(effectiveAddress, length, oldPc));
-                }else{
-                    this.log("> subi"+lengthString(length)+
-                        " #$"+immediate.toString(16)+","+this.eaStr(effectiveAddress, length, oldPc));
-                }
-                
-                return true;
-            }
-            
-            case NOP: {
-                this.log("> nop");
-                return true;
-            }
-            
-            case NOT: {
-                let [length, tmp] = getOperandLength(instruction, false);
-                let val = 0;
-                
-                if(effectiveAddress & 0b111000) {
-                    // Memory location
-                    let addr = this.addressEa(effectiveAddress, length);
-                    val = this.emu.readMemoryN(addr, length);
-                    
-                    this.emu.writeMemoryN(addr, ~val, length);
-                    this.time += 4;
-                    if(length == 4) this.time += 4;
-                }else{
-                    // Register
-                    val = this.registers[effectiveAddress] & lengthMask(length);
-                    
-                    this.registers[effectiveAddress] &= ~lengthMask(length);
-                    this.registers[effectiveAddress] |= ~val & lengthMask(length);
-                    
-                    if(length == 4) this.time += 2;
-                }
-                
-                let ccr = this.registers[CCR] & X;
-                ccr |= val == 0 ? Z : 0;
-                ccr |= isNegative(~val, length) ? N : 0;
-                this.registers[CCR] = ccr;
-                
-                this.log("> not"+lengthString(length)+" "+this.eaStr(effectiveAddress));
-                
-                return true;
-            }
-            
-            case BCC_BRA_BSR: {
-                let condition = (instruction & 0x0f00) >>> 8;
-                let displacement = instruction & 0x00ff;
-                let bsr = condition == 0b0001;
-                
-                if(displacement == 0x00) {
-                    displacement = this.pcAndAdvance(2);
-                    displacement = makeSigned(displacement, 2);
-                }else{
-                    displacement = makeSigned(displacement, 1);
-                }
-                
-                if(bsr) {
-                    this.log("> bsr #$" + displacement.toString(16));
-                }else{
-                    this.log("> b"+conditionStr(condition) + " #$" + displacement.toString(16));
-                }
-                
-                if(!condition || bsr || doCondition(condition, this.registers[CCR])) {
-                    if(bsr) {
-                        this.registers[SP] -= 4;
-                        this.emu.writeMemory32(this.registers[SP], this.registers[PC]);
-                        this.time += 8;
-                    }else{
-                        this.time += 2;
-                    }
-                    
-                    this.registers[PC] = oldPc + displacement + 2;
-                    
-                }else{
-                    this.time += 4;
-                }
-                return true;
-            }
-            
-            case MOVE_MOVEA: {
-                let length = 1;
-                if((instruction & 0x3000) == 0x3000) {
-                    length = 2;
-                }else if((instruction & 0x3000) == 0x2000) {
-                    length = 4;
-                }
-                
-                let val = this.readEa(effectiveAddress, length);
-                if(((instruction >> 6) & 0b111) == 0b001) {
-                    // movea
-                    val = makeSigned(val, length);
-                    let destReg = ((instruction >> 9) & 0b111);
-                    this.registers[ABASE + destReg] = val;
-                    this.log("> movea" + lengthString(length)
-                        + " " + this.eaStr(effectiveAddress, length, oldPc)+",a"+destReg);
-                }else{
-                    // move
-                    let ccr = this.registers[CCR] & X;
-                    ccr |= val == 0 ? Z : 0;
-                    ccr |= isNegative(val, length) ? N : 0;
-                    this.registers[CCR] = ccr;
-                    
-                    let destEa = (instruction & 0x0fc0) >>> 6;
-                    destEa = (destEa >>> 3) | ((destEa & 0b111) << 3);
-                    this.writeEa(destEa, val, length);
-                    this.log("> move" + lengthString(length)
-                        + " " + this.eaStr(effectiveAddress, length, oldPc) + "," + this.eaStr(destEa, length, oldPc));
-                }
-                return true;
-            }
-            
-            case MOVEM_TO_REG: {
-                let length = 2;
-                if(noEffectiveAddress == 0x4cc0) {
-                    length = 4;
-                }
-                
-                let mask = this.pcAndAdvance(2);
-                
-                let val = 0;
-                let inc = false;
-                let addr = 0;
-                if((effectiveAddress & 0b111000) == 0b011000) {
-                    inc = true;
-                }else{
-                    addr = this.addressEa(effectiveAddress, length);
-                }
-                
-                this.time += 8;
-                for(let a = 0; a <= 15; a ++) {
-                    if(mask & (1 << a)) {
-                        if(inc) {
-                            val = this.readEa(effectiveAddress, length);
-                        }else{
-                            val = this.emu.readMemoryN(addr, length);
-                            addr += length;
-                        }
-                        
-                        this.registers[a] = makeSigned(val, length);
-                    }
-                }
-                
-                this.log("> movem"+lengthString(length)+" "+this.eaStr(effectiveAddress)+",#$"+mask.toString(16));
-                
-                return true;
-            }
-            
-            case MOVEM_TO_MEM: {
-                let length = 2;
-                if(noEffectiveAddress == 0x48c0) {
-                    length = 4;
-                }
-                
-                let mask = this.pcAndAdvance(2);
-                
-                let val = 0;
-                let dec = false;
-                let addr = 0;
-                if((effectiveAddress & 0b111000) == 0b100000) {
-                    dec = true;
-                }else{
-                    addr = this.addressEa(effectiveAddress, length);
-                }
-                
-                let reg = effectiveAddress & 0b111;
-                let init = this.registers[ABASE + reg];
-                this.time += 4;
-                for(let a = 0; a <= 15; a ++) {
-                    if(mask & (1 << a)) {
-                        let r = dec ? 15 - a : a;
-                        
-                        if(r == reg + ABASE) {
-                            val = init;
-                        }else{
-                            val = this.registers[r];
-                        }
-                        
-                        if(dec) {
-                            this.writeEa(effectiveAddress, val, length);
-                        }else{
-                            this.emu.writeMemoryN(addr, val, length);
-                            addr += length;
-                        }
-                    }
-                }
-                
-                this.log("> movem"+lengthString(length)+" #$"+mask.toString(16)+","+this.eaStr(effectiveAddress));
-                
-                return true;
-            }
-            
-            case RESET: {
-                this.log("> reset");
-                // Apparently this has no effect?
-                return true;
-            }
-            
-            case ROL_ROR_REG: {
-                this.log("> rol/ror (register)");
-                let [cr, left, length, regNo] = this.getShift(instruction);
-                
-                this.time += 2 + (2 * cr);
-                if(length == 4) this.time += 2;
-                
-                let value = this.registers[regNo] & lengthMask(length);
-                let tmp = 0;
-                
-                for(let i = 0; i < cr; i ++) {
-                    if(left) {
-                        tmp = value >>> (length * 8 - 1);
-                        value <<= 1;
-                        value |= tmp;
-                        value &= lengthMask(length);
-                    }else{
-                        // Right
-                        tmp = value & 0b1;
-                        value >>>= 1;
-                        value |= (tmp << (length * 8 - 1));
-                    }
-                }
-                
-                this.registers[regNo] = (this.registers[regNo] & ~lengthMask(length)) | (value & lengthMask(length));
-                
-                let ccr = this.registers[CCR] & X;
-                ccr |= tmp ? C : 0;
-                ccr |= isNegative(value, length) ? N : 0;
-                ccr |= value == 0 ? Z : 0;
-                this.registers[CCR] = ccr;
-                
-                return true;
-            }
-            
-            case ROL_ROR_MEM: {
-                this.log("> rol/ror (memory)");
-                console.error("ROL/ROR with memory not implemented yet");
-                return false;
-            }
-            
-            case ROXL_ROXR_REG: {
-                this.log("> roxl/roxr (register)");
-                let [cr, left, length, regNo] = this.getShift(instruction);
-                
-                this.time += 2 + (2 * cr);
-                if(length == 4) this.time += 2;
-                
-                let value = this.registers[regNo] & lengthMask(length);
-                let tmp = 0;
-                let tmp2 = 0;
-                let x = (this.registers[CCR] & X) ? 1 : 0;
-                
-                for(let i = 0; i < cr; i ++) {
-                    if(left) {
-                        tmp = x;
-                        x = value >>> (length * 8 - 1);
-                        value <<= 1;
-                        value |= tmp;
-                        value &= lengthMask(length);
-                    }else{
-                        // Right
-                        tmp = x;
-                        x = value & 0b1;
-                        value >>>= 1;
-                        value |= (tmp << (length * 8 - 1));
-                    }
-                }
-                
-                this.registers[regNo] = (this.registers[regNo] & ~lengthMask(length)) | (value & lengthMask(length));
-                
-                if(cr == 0) {
-                    let ccr = this.registers[CCR] & X;
-                    ccr |= ccr ? C : 0; // Set to the value of the extend bit
-                    ccr |= isNegative(value, length) ? N : 0;
-                    ccr |= value == 0 ? Z : 0;
-                    this.registers[CCR] = ccr;
-                }else{
-                    let ccr = 0;
-                    ccr |= x ? (C | X) : 0;
-                    ccr |= isNegative(value, length) ? N : 0;
-                    ccr |= value == 0 ? Z : 0;
-                    this.registers[CCR] = ccr;
-                }
-                
-                return true;
-            }
-            
-            case ROXL_ROXR_MEM: {
-                this.log("> roxl/roxr (memory)");
-                console.error("ROXL/ROXR with memory not implemented yet");
-                return false;
-            }
-            
-            case RTE: {
-                this.log("> rte");
-                
-                let sr = this.emu.readMemory(this.registers[SP]);
-                this.registers[CCR] = sr & 0x00ff;
-                this.registers[SR] = sr & 0xff00;
-                this.registers[SP] += 2;
-                
-                this.registers[PC] = this.emu.readMemory32(this.registers[SP]);
-                this.registers[SP] += 4;
-                
-                this.changeMode(sr & S ? SUPER : USER);
-                this.time += 16;
-                
-                return true;
-            }
-            
-            case RTR: {
-                this.log("> rtr");
-                
-                this.time += 16;
-                this.registers[CCR] = this.emu.readMemory(this.registers[SP]);
-                this.registers[SP] += 2;
-                this.registers[PC] = this.emu.readMemory32(this.registers[SP]);
-                this.registers[SP] += 4;
-                
-                return true;
-            }
-            
-            case RTS: {
-                this.log("> rts");
-                
-                this.time += 12;
-                this.registers[PC] = this.emu.readMemory32(this.registers[SP]);
-                this.registers[SP] += 4;
-                
-                return true;
-            }
-            
-            case SBCD: {
-                this.log("> sbcd");
-                console.error("SBCD not implemented yet");
-                return false;
-            }
-            
-            case SCC: {
-                this.log("> scc");
-                
-                let condition = (instruction & 0x0f00) >>> 8;
-                
-                if(effectiveAddress & 0b111000) {
-                    // Memory
-                    let addr = this.addressEa(effectiveAddress, 1);
-                    this.emu.readMemory8(addr, 1); // "A memory address is read before it is written"
-                    if(doCondition(condition, this.registers[CCR])) {
-                        this.emu.writeMemory8(addr, 0xff, 1);
-                    }else{
-                        this.emu.writeMemory8(addr, 0x00, 1);
-                    }
-                    this.time += 8;
-                }else{
-                    // Register
-                    if(doCondition(condition, this.registers[CCR])) {
-                        this.writeEa(effectiveAddress, 0xff, 1);
-                        this.time += 2;
-                    }else{
-                        this.writeEa(effectiveAddress, 0x00, 1);
-                    }
-                }
-                
-                
-                return true;
-            }
-            
-            case STOP: {
-                this.log("> stop");
-                
-                if(this.mode != SUPER) {
-                    this.trap(EX_PRIV_VIO);
-                }else{
-                    let val = this.pcAndAdvance(2);
-                    
-                    this.registers[CCR] = val & 0x00ff;
-                    this.registers[SR] = val & 0xff00;
-                    this.changeMode((val & S) ? SUPER : USER);
-                    this.time += 8;
-                    
-                    this.stopped = true;
-                }
-                return true;
-            }
-            
-            case SWAP: {
-                this.log("> swap");
-                let reg = instruction & 0b111;
-                
-                let high = this.registers[reg] << 16;
-                this.registers[reg] >>>= 16;
-                this.registers[reg] |= high;
-                
-                let ccr = this.registers[CCR] & X;
-                ccr |= this.registers[reg] == 0 ? Z : 0;
-                ccr |= isNegative(this.registers[reg], 4) ? N : 0;
-                this.registers[CCR] = ccr;
-                
-                return true;
-            }
-            
-            case TRAP: {
-                this.log("> trap");
-                // TODO: Timing
-                this.trap((instruction & 0x0f) + 32);
-                
-                return true;
-            }
-            
-            case TRAPV: {
-                this.log("> trapv");
-                // TODO: Timing
-                this.trap(EX_TRAPV);
-                
-                return true;
-            }
-            
-            case UNLK: {
-                this.log("> unlk");
-                this.time += 8;
-                
-                let reg = ABASE + (instruction & 0b111);
-                
-                this.registers[SP] = this.registers[reg];
-                this.registers[reg] = this.emu.readMemory32(this.registers[SP]);
-                this.registers[SP] += 4;
-                
-                return true;
-            }
-            
-            default:
-                console.error("Unknown opcode: 0x" + instruction.toString(16) + " at 0x" + oldPc.toString(16));
-                return false;
+        if(opcode in opFns) {
+            return opFns[opcode].call(this, opcode, instruction, effectiveAddress, oldPc);
+        }else{
+            console.error("Opcode %o does not have a function", opcode);
+            return false;
         }
     }
     
@@ -2504,3 +926,1575 @@ export class M68k {
         }
     }
 }
+
+let opFns = {};
+
+opFns[MOVE_MOVEA] = function fn_MOVE_MOVEA(opcode, instruction, effectiveAddress, oldPc) {
+    let length = 1;
+    if((instruction & 0x3000) == 0x3000) {
+        length = 2;
+    }else if((instruction & 0x3000) == 0x2000) {
+        length = 4;
+    }
+    
+    let val = this.readEa(effectiveAddress, length);
+    if(((instruction >> 6) & 0b111) == 0b001) {
+        // movea
+        val = makeSigned(val, length);
+        let destReg = ((instruction >> 9) & 0b111);
+        this.registers[ABASE + destReg] = val;
+        this.log("> movea" + lengthString(length)
+            + " " + this.eaStr(effectiveAddress, length, oldPc)+",a"+destReg);
+    }else{
+        // move
+        let ccr = this.registers[CCR] & X;
+        ccr |= val == 0 ? Z : 0;
+        ccr |= isNegative(val, length) ? N : 0;
+        this.registers[CCR] = ccr;
+        
+        let destEa = (instruction & 0x0fc0) >>> 6;
+        destEa = (destEa >>> 3) | ((destEa & 0b111) << 3);
+        this.writeEa(destEa, val, length);
+        this.log("> move" + lengthString(length)
+            + " " + this.eaStr(effectiveAddress, length, oldPc) + "," + this.eaStr(destEa, length, oldPc));
+    }
+    return true;
+};
+
+opFns[BCC_BRA_BSR] = function fn_BCC_BRA_BSR(opcode, instruction, effectiveAddress, oldPc) {
+    let condition = (instruction & 0x0f00) >>> 8;
+    let displacement = instruction & 0x00ff;
+    let bsr = condition == 0b0001;
+    
+    if(displacement == 0x00) {
+        displacement = this.pcAndAdvance(2);
+        displacement = makeSigned(displacement, 2);
+    }else{
+        displacement = makeSigned(displacement, 1);
+    }
+    
+    if(bsr) {
+        this.log("> bsr #$" + displacement.toString(16));
+    }else{
+        this.log("> b"+conditionStr(condition) + " #$" + displacement.toString(16));
+    }
+    
+    if(!condition || bsr || doCondition(condition, this.registers[CCR])) {
+        if(bsr) {
+            this.registers[SP] -= 4;
+            this.emu.writeMemory32(this.registers[SP], this.registers[PC]);
+            this.time += 8;
+        }else{
+            this.time += 2;
+        }
+        
+        this.registers[PC] = oldPc + displacement + 2;
+        
+    }else{
+        this.time += 4;
+    }
+    return true;
+};
+
+opFns[DBCC] = function fn_DBCC(opcode, instruction, effectiveAddress, oldPc) {
+    let reg = instruction & 0b111;
+    let condition = (instruction >> 8) & 0b1111;
+    let displacement = this.pcAndAdvance(2);
+    
+    this.time += 6;
+    
+    this.log("> db"+conditionStr(condition) + " d" + reg + ",#$" + makeSigned(displacement, 2).toString(16));
+    
+    if(!doCondition(condition, this.registers[CCR])) {
+        let newVal = makeSigned((this.registers[reg] & 0x0000ffff), 2) - 1;
+        this.registers[reg] = (this.registers[reg] & 0xffff0000) | (newVal & 0x0000ffff);
+        if(newVal != -1) {
+            this.registers[PC] = oldPc + makeSigned(displacement, 2) + 2;
+            this.log("Continuing loop to 0x" + this.registers[PC].toString(16));
+            this.time -= 4;
+        }else{
+            this.time -= 2;
+        }
+    }
+    
+    return true;
+};
+
+opFns[TST] = function fn_TST(opcode, instruction, effectiveAddress, oldPc) {
+    let noEffectiveAddress = instruction & ~effectiveAddress;
+    let length = 1;
+    if(noEffectiveAddress == 0x4a40) {
+        length = 2;
+    }else if(noEffectiveAddress == 0x4a80) {
+        length = 4;
+    }
+    
+    let val = this.readEa(effectiveAddress, length);
+    
+    this.log("> tst"+lengthString(length) + " "+this.eaStr(effectiveAddress, length, oldPc));
+    
+    let ccr = this.registers[CCR] & X;
+    ccr |= val == 0 ? Z : 0;
+    ccr |= isNegative(val, length) ? N : 0;
+    this.registers[CCR] = ccr;
+    return true;
+};
+
+opFns[NOP] = function fn_NOP(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> nop");
+    return true;
+};
+
+opFns[ADD_ADDA] = function fn_ADD_ADDA(opcode, instruction, effectiveAddress, oldPc) {
+    let register = (instruction >> 9) & 0b111;
+    let opmode = (instruction >> 6) & 0b111;
+    let length = 0;
+    let tmp;
+    let addr = false;
+    
+    [length, tmp] = getOperandLength(instruction, true);
+    
+    // Do the math
+    if((opmode & 0b011) == 0b011) {
+        // < ea > + An -> An
+        this.time += 4;
+        register += ABASE;
+        let ea = makeSigned(this.readEa(effectiveAddress, length), length);
+        
+        this.registers[register] += ea;
+        this.log("> adda"+lengthString(length)+" "+this.eaStr(effectiveAddress, length)+",a"+(register - ABASE));
+    }else{
+        // < ea > + Dn -> Dn / < ea >
+        let eaAddr = 0;
+        let ea = 0;
+        if(opmode & 0b100) {
+            // Destination is address
+            eaAddr = this.addressEa(effectiveAddress, length);
+            ea = this.emu.readMemoryN(eaAddr, length);
+        }else{
+            // Destination is register
+            ea = this.readEa(effectiveAddress, length);
+        }
+        
+        let reg = this.registers[register] & lengthMask(length);
+        tmp[0] = ea;
+        tmp[0] += reg;
+        
+        this.registers[CCR] = addCcr(ea, reg, tmp[0], length);
+        
+        if(opmode & 0b100) {
+            // Destination is address
+            this.time += 4;
+            this.emu.writeMemoryN(eaAddr, tmp[0], length);
+            this.log("> add"+lengthString(length)+" d"+(register)+","+this.eaStr(effectiveAddress, length));
+        }else{
+            // Destination is register
+            this.registers[register] &= ~lengthMask(length);
+            this.registers[register] |= tmp[0];
+            this.log("> add"+lengthString(length)+" "+this.eaStr(effectiveAddress, length)+",d"+register);
+        }
+    }
+    
+    return true;
+};
+
+opFns[CMP_CMPA] = function fn_CMP_CMPA(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> cmp/cmpa");
+    let register = (instruction >> 9) & 0b111;
+    let opmode = (instruction >> 6) & 0b111;
+    let length = 0;
+    let tmp;
+    let addr = false;
+    
+    [length, tmp] = getOperandLength(instruction, true);
+    
+    // Do the math
+    if((opmode & 0b011) == 0b011) {
+        // An - < ea >
+        this.time += 2;
+        register += ABASE;
+        let ea = this.readEa(effectiveAddress, length);
+        
+        let reg = this.registers[register] & lengthMask(length);
+        tmp[0] = reg;
+        tmp[0] -= ea;
+        
+        this.registers[CCR] = this.subCcr(reg, ea, tmp[0], length);
+    }else{
+        // Dn - < ea >
+        if(length == 4) {
+            this.time += 2;
+        }
+        let eaAddr = 0;
+        let ea = this.readEa(effectiveAddress, length);
+        
+        let reg = this.registers[register] & lengthMask(length);
+        tmp[0] = reg;
+        tmp[0] -= ea;
+        
+        this.registers[CCR] = this.subCcr(reg, ea, tmp[0], length);
+    }
+    
+    return true;
+};
+
+opFns[SHIFT_REG] = opFns[SHIFT_MEM] = function fn_SHIFT_MEM(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> asl/asr/lsl/lsr");
+    let size = (instruction >> 6) & 0b11;
+    let register = (instruction & 0x0020) != 0;
+    let logical;
+    
+    let [cr, left, length, regNo] = this.getShift(instruction);
+    
+    if(size == 0b11) {
+        // Memory shift
+        let addr = this.addressEa(effectiveAddress, 2);
+        this.time += 4;
+        
+        logical = (instruction & 0x0200) != 0;
+        
+        let val = this.emu.readMemory(addr);
+        let xc;
+        let v;
+        if(left) {
+            xc = val >> 15;
+            v = !((val & 0xc000) == 0x0 || (val & 0xc000) == 0xc000);
+            val <<= 1;
+        }else{
+            xc = val & 0x0001;
+            v = 0; // MSB never changes since it is propagated
+            if(logical) {
+                val >>>= 1;
+            }else{
+                value = makeSigned(value, 2);
+                val >>= 1;
+            }
+        }
+        
+        this.emu.writeMemory(addr, val);
+        
+        let ccr = 0;
+        ccr |= xc ? (C | X) : 0;
+        ccr |= isNegative(val, 2) ? N : 0;
+        ccr |= (val & 0xffff) == 0 ? Z : 0;
+        ccr |= (v && !logical) ? V : 0;
+        this.registers[CCR] = ccr;
+    }else{
+        // Register shift
+        logical = (instruction & 0b1000) != 0;
+        
+        this.time += 2 + (2 * cr);
+        if(length == 4) this.time += 2;
+        
+        let value = this.registers[regNo] & lengthMask(length);
+        let xc;
+        let v;
+        
+        if(cr) {
+            if(left) {
+                xc = (value & (0x1 << ((length * 8) - 1) >>> (cr - 1))) != 0;
+                let vmask = lengthMask(length) & ~(lengthMask(length) >>> cr);
+                v = !((value & vmask) == vmask || (value & vmask) == 0);
+                value <<= cr;
+            }else{
+                // Right
+                xc = (value & (0x1 << (cr - 1))) != 0;
+                v = 0; // MSB never changes since it is propagated
+                if(logical) {
+                    value >>>= cr;
+                }else{
+                    value = makeSigned(value, length);
+                    value >>= cr;
+                }
+            }
+            
+            this.registers[regNo] = (this.registers[regNo] & ~lengthMask(length)) | (value & lengthMask(length));
+            
+            let ccr = 0;
+            ccr |= xc ? (C | X) : 0;
+            ccr |= isNegative(value, length) ? N : 0;
+            ccr |= value == 0 ? Z : 0;
+            ccr |= (v && !logical) ? V : 0;
+            this.registers[CCR] = ccr;
+        }else{
+            let ccr = this.registers[CCR];
+            ccr &= X;
+            ccr |= isNegative(value, length) ? N : 0;
+            ccr |= value == 0 ? Z : 0;
+            this.registers[CCR] = ccr;
+        }
+    }
+    
+    return true;
+};
+
+opFns[SUBI] = opFns[SUBQ] = function fn_SUBQ(opcode, instruction, effectiveAddress, oldPc) {
+    let length = 0;
+    let immediate = 0;
+    let tmp;
+    let q = (instruction & 0xf100) == 0x5100;
+    switch(instruction & 0x00c0) {
+        case 0x0000:
+            length = 1;
+            if(!q) {
+                immediate = this.pcAndAdvance(1);
+            }
+            tmp = u8;
+            break;
+        case 0x0040:
+            length = 2;
+            if(!q) {
+                immediate = this.pcAndAdvance(2);
+            }
+            tmp = u16;
+            break;
+        case 0x0080:
+            length = 4;
+            if(!q) {
+                immediate = this.pcAndAdvance(4);
+            }
+            tmp = u32;
+            break;
+    }
+    
+    if(q) {
+        immediate = (instruction >> 9) & 0b111;
+        if(immediate == 0) immediate = 8;
+    }
+    
+    if((effectiveAddress & 0b111000) == 0b000000) {
+        // To data register
+        let reg = this.registers[effectiveAddress] & lengthMask(length);
+        tmp[0] = reg;
+        tmp[0] -= immediate;
+        
+        this.registers[CCR] = this.subCcr(reg, immediate, tmp[0], length, true);
+        
+        if(length == 4) {
+            this.time += 4;
+        }
+        
+        this.registers[effectiveAddress] &= ~lengthMask(length);
+        this.registers[effectiveAddress] |= tmp[0];
+    }else if((effectiveAddress & 0b111000) == 0b001000) {
+        // To address register
+        if(!q) {
+            console.error("Tried to subtract from address register!");
+            return false;
+        }
+        this.time += 4;
+        this.registers[effectiveAddress] -= immediate;
+    }else{
+        // To memory address
+        let addr = this.addressEa(effectiveAddress, length);
+        let ea = this.emu.readMemoryN(addr, length);
+        tmp[0] = ea;
+        tmp[0] -= immediate;
+        
+        if(q) {
+            this.time -= 8;
+        }
+        
+        this.registers[CCR] = this.subCcr(ea, immediate, tmp[0], length, true);
+        
+        this.emu.writeMemoryN(addr, tmp[0], length);
+    }
+    
+    if(q) {
+        this.log("> subq"+lengthString(length)+
+            " #$"+immediate.toString(16)+","+this.eaStr(effectiveAddress, length, oldPc));
+    }else{
+        this.log("> subi"+lengthString(length)+
+            " #$"+immediate.toString(16)+","+this.eaStr(effectiveAddress, length, oldPc));
+    }
+    
+    return true;
+};
+
+opFns[MOVE_TO_CCR] = function fn_MOVE_TO_CCR(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> move to ccr");
+    
+    let val = this.readEa(effectiveAddress, 1);
+    this.registers[CCR] &= ~lengthMask(1);
+    this.registers[CCR] |= val;
+    
+    return true;
+};
+
+opFns[MOVE_FROM_SR] = function fn_MOVE_FROM_SR(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> move from sr");
+    let val = this.registers[SR] | this.registers[CCR];
+    
+    if(effectiveAddress & 0b111000) {
+        // Memory
+        let addr = this.addressEa(val, 2);
+        this.emu.readMemory(addr);
+        this.emu.writeMemory(addr, val);
+        this.time += 4;
+    }else{
+        // Register
+        this.registers[effectiveAddress] &= 0xffff0000;
+        this.registers[effectiveAddress] |= val;
+        this.time += 2;
+    }
+    return true;
+};
+
+opFns[MOVE_TO_SR] = function fn_MOVE_TO_SR(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> move to sr");
+    if(this.mode != SUPER) {
+        this.trap(EX_PRIV_VIO);
+    }else{
+        let val = this.readEa(effectiveAddress, 2);
+        
+        this.registers[CCR] = val & 0x00ff;
+        this.registers[SR] = val & 0xff00;
+        this.changeMode((val & S) ? SUPER : USER);
+        this.time += 8;
+    }
+    return true;
+};
+
+opFns[NBCD] = function fn_NBCD(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> nbcd");
+    console.error("NBCD not supported yet");
+    return false;
+};
+
+opFns[TAS] = function fn_TAS(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> tas");
+    
+    // TAS does nothing on a mega drive (at least, version 1 and 2
+    
+    return true;
+};
+
+opFns[JMP] = function fn_JMP(opcode, instruction, effectiveAddress, oldPc) {
+    this.registers[PC] = this.addressEa(effectiveAddress, 4);
+    this.time += 4;
+    
+    this.log("> jmp #$"+this.registers[PC].toString(16));
+    
+    return true;
+};
+
+opFns[JSR] = function fn_JSR(opcode, instruction, effectiveAddress, oldPc) {
+    let addr = this.addressEa(effectiveAddress, 4);
+    
+    this.registers[SP] -= 4;
+    this.emu.writeMemory32(this.registers[SP], this.registers[PC]);
+    
+    this.registers[PC] = addr;
+    this.time += 12;
+    
+    this.log("> jsr #$"+this.registers[PC].toString(16));
+    
+    return true;
+};
+
+opFns[ANDI_TO_CCR] = function fn_ANDI_TO_CCR(opcode, instruction, effectiveAddress, oldPc) {
+    let instruction2 = pcAndAdvance(2);
+    this.log("> andi to ccr");
+    this.time += 16;
+    this.registers[CCR] &= (instruction2 | 0xff00);
+    return true;
+};
+
+opFns[ORI_TO_CCR] = function fn_ORI_TO_CCR(opcode, instruction, effectiveAddress, oldPc) {
+    let instruction2 = pcAndAdvance(2);
+    this.log("> ori to ccr");
+    this.time += 16;
+    this.registers[CCR] |= (instruction2 & 0xff);
+    return true;
+};
+
+opFns[EORI_TO_CCR] = function fn_EORI_TO_CCR(opcode, instruction, effectiveAddress, oldPc) {
+    let instruction2 = pcAndAdvance(2);
+    this.log("> eori to ccr");
+    this.time += 16;
+    this.registers[CCR] ^= (instruction2 & 0x00ff);
+    return true;
+};
+
+opFns[ANDI_TO_SR] = opFns[EORI_TO_SR] = opFns[ORI_TO_SR] = function fn_ORI_TO_SR(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> andi/eori/ori to SR");
+    let op = this.pcAndAdvance(2);
+    if(this.mode != SUPER) {
+        this.trap(EX_PRIV_VIO);
+    }else{
+        let val = this.registers[SR] | this.registers[CCR];
+        
+        switch(instruction) {
+            case 0x027c: val &= tmp; break; // andi
+            case 0x0a7c: val ^= tmp; break; // eori
+            case 0x007c: val |= tmp; break; // ori;
+            default: console.error("andi/eori/ori... How did I get here?"); break;
+        }
+        
+        this.registers[CCR] = val & 0x00ff;
+        this.registers[SR] = val & 0xff00;
+        this.changeMode((val & S) ? SUPER : USER);
+        this.time += 16;
+    }
+    return true;
+};
+
+opFns[ABCD] = function fn_ABCD(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> abcd");
+    console.error("ABCD opcode not yet supported.");
+    return false;
+};
+
+opFns[ADDI] = opFns[ADDQ] = function fn_ADDQ(opcode, instruction, effectiveAddress, oldPc) {
+    let length = 0;
+    let immediate = 0;
+    let tmp;
+    let q = (instruction & 0xf100) == 0x5000;
+    switch(instruction & 0x00c0) {
+        case 0x0000:
+            length = 1;
+            if(!q) {
+                immediate = this.pcAndAdvance(1);
+            }
+            tmp = u8;
+            break;
+        case 0x0040:
+            length = 2;
+            if(!q) {
+                immediate = this.pcAndAdvance(2);
+            }
+            tmp = u16;
+            break;
+        case 0x0080:
+            length = 4;
+            if(!q) {
+                immediate = this.pcAndAdvance(4);
+            }
+            tmp = u32;
+            break;
+    }
+    
+    if(q) {
+        immediate = (instruction >> 9) & 0b111;
+        if(immediate == 0) immediate = 8;
+    }
+    
+    if((effectiveAddress & 0b111000) == 0b000000) {
+        // To data register
+        let reg = this.registers[effectiveAddress] & lengthMask(length);
+        tmp[0] = reg;
+        tmp[0] += immediate;
+        
+        this.registers[CCR] = addCcr(immediate, reg, tmp[0], length);
+        
+        if(length == 4) {
+            this.time += 4;
+        }
+        
+        this.registers[effectiveAddress] &= ~lengthMask(length);
+        this.registers[effectiveAddress] |= tmp[0];
+    }else if((effectiveAddress & 0b111000) == 0b001000) {
+        // To address register
+        if(!q) {
+            console.error("Tried to add to an address register!");
+            return false;
+        }
+        this.time += 4;
+        this.registers[effectiveAddress] += immediate;
+    }else{
+        // To memory address
+        let addr = this.addressEa(effectiveAddress, length);
+        let ea = this.emu.readMemoryN(addr, length);
+        tmp[0] = ea;
+        tmp[0] += immediate;
+        
+        if(q) {
+            this.time -= 8;
+        }
+        
+        this.registers[CCR] = addCcr(immediate, ea, tmp[0], length);
+        
+        this.emu.writeMemoryN(addr, tmp[0], length);
+    }
+    
+    if(q) {
+        this.log("> addq"+lengthString(length)+
+            " #$"+immediate.toString(16)+","+this.eaStr(effectiveAddress, length, oldPc));
+    }else{
+        this.log("> addi"+lengthString(length)+
+            " #$"+immediate.toString(16)+","+this.eaStr(effectiveAddress, length, oldPc));
+    }
+    
+    return true;
+};
+
+opFns[ADDX] = function fn_ADDX(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> addx");
+    console.error("ADDX opcode not yet supported.");
+    return false;
+};
+
+opFns[AND] = opFns[EOR] = opFns[OR] = function fn_OR(opcode, instruction, effectiveAddress, oldPc) {
+    let register = (instruction >> 9) & 0b111;
+    let opmode = (instruction >> 6) & 0b111;
+    let length = 0;
+    let tmp;
+    
+    [length, tmp] = getOperandLength(instruction, false);
+    
+    let istr = "???";
+    switch(instruction & 0xf000) {
+        case 0xc000: istr = "and"; break;
+        case 0xb000: istr = "eor"; break;
+        case 0x8000: istr = "or"; break;
+    }
+    
+    // Do the math
+    let eaAddr = 0;
+    let ea = 0;
+    if(opmode & 0b100) {
+        // -> < ea >
+        if((effectiveAddress & 0b111000) == 0) {
+            // Register
+            ea = this.registers[effectiveAddress];
+        }else{
+            // Memory
+            eaAddr = this.addressEa(effectiveAddress, length);
+            ea = this.emu.readMemoryN(eaAddr, length);
+            this.time += 4;
+        }
+    }else{
+        // -> r
+        ea = this.readEa(effectiveAddress, length);
+    }
+    
+    let reg = this.registers[register];
+    tmp[0] = ea;
+    switch(instruction & 0xf000) {
+        case 0xc000: tmp[0] &= reg; break; // and
+        case 0xb000: tmp[0] ^= reg; break; // eor
+        case 0x8000: tmp[0] |= reg; break; // or
+        default: console.error("and/eor/or... How did I get here?");
+    }
+    
+    let ccr = this.registers[CCR] & X;
+    ccr |= (tmp[0] & (1 << ((length * 8) - 1))) ? N : 0;
+    ccr |= tmp[0] == 0 ? Z : 0;
+    this.registers[CCR] = ccr;
+    
+    if(opmode & 0b100) {
+        // -> < ea >
+        if(length == 4) {
+            this.time += 2;
+            if((instruction & 0xf000) == 0xb000) {
+                // eor
+                this.time += 2;
+            }
+        }
+        
+        if((effectiveAddress & 0b111000) == 0) {
+            // Register
+            this.registers[effectiveAddress] = (this.registers[effectiveAddress] & ~lengthMask(length)) | tmp[0];
+        }else{
+            // Address
+            this.time += 4;
+            if(length == 4) this.time += 4;
+            
+            this.emu.writeMemoryN(eaAddr, tmp[0], length);
+        }
+        
+        this.log("> "+istr+lengthString(length)+" d"+register+","+this.eaStr(effectiveAddress, length, oldPc));
+    }else{
+        // -> r
+        this.registers[register] = (this.registers[register] & ~lengthMask(length)) | tmp[0];
+        if((instruction & 0xf000) == 0xb000) {
+            // eor
+            console.error("Tried to write the result of an eor to non EA destination.");
+            return false;
+        }
+        this.log("> "+istr+lengthString(length)+" "+this.eaStr(effectiveAddress, length, oldPc)+",d"+register);
+    }
+    
+    return true;
+};
+
+opFns[ANDI] = opFns[EORI] = opFns[ORI] = function fn_ORI(opcode, instruction, effectiveAddress, oldPc) {
+    let [length, immediate, tmp] = this.getImmediate(instruction);
+    
+    let istr = "???";
+    switch(instruction & 0xff00) {
+        case 0x0200: istr = "andi"; break;
+        case 0x0a00: istr = "eori"; break;
+        case 0x0000: istr = "ori"; break;
+    }
+    
+    if((effectiveAddress & 0b111000) == 0b000000) {
+        // To data register
+        let reg = this.registers[effectiveAddress] & lengthMask(length);
+        let val = immediate;
+        
+        switch(instruction & 0xff00) {
+            case 0x0200: val &= reg; break; // andi
+            case 0x0a00: val ^= reg; break; // eori
+            case 0x0000: val |= reg; break; // ori
+            default: console.error("andi/eori/ori... How did I get here?");
+        }
+        
+        val &= lengthMask(length);
+        
+        this.registers[effectiveAddress] &= ~lengthMask(length);
+        this.registers[effectiveAddress] |= val;
+        
+        let ccr = this.registers[CCR] & X;
+        ccr |= isNegative(val, length) ? N : 0;
+        ccr |= val == 0 ? Z : 0;
+        this.registers[CCR] = ccr;
+        
+        if(length == 4) this.time += 4;
+        this.log("> "+istr+lengthString(length)+" #$"+immediate.toString(16)+",d"+effectiveAddress);
+    }else{
+        // To memory address
+        let addr = this.addressEa(effectiveAddress, length);
+        let ea = this.emu.readMemoryN(addr, length);
+        tmp[0] = immediate;
+        switch(instruction & 0xff00) {
+            case 0x0200: tmp[0] &= ea; break; // andi
+            case 0x0a00: tmp[0] ^= ea; break; // eori
+            case 0x0000: tmp[0] |= ea; break; // ori
+            default: console.error("andi/eori/ori... How did I get here?");
+        }
+        
+        let ccr = this.registers[CCR] & X;
+        ccr |= isNegative(tmp[0], length) ? N : 0;
+        ccr |= (tmp[0]) == 0 ? Z : 0;
+        this.registers[CCR] = ccr;
+        
+        this.time += 4;
+        if(length == 4) this.time += 4;
+        this.emu.writeMemoryN(addr, tmp[0], length);
+        
+        this.log("> "+istr+lengthString(length)+
+            " #$"+immediate.toString(16)+","+this.eaStr(effectiveAddress, length, oldPc));
+    }
+    
+    return true;
+};
+
+opFns[BMOD_REG] = opFns[BMOD_IMM] = function fn_BMOD_IMM(opcode, instruction, effectiveAddress, oldPc) { // btst/bchg/bclr/bset
+    let chg = (instruction & 0x00c0) == 0x0040;
+    let clr = (instruction & 0x00c0) == 0x0080;
+    let set = (instruction & 0x00c0) == 0x00c0;
+    
+    let bitNo;
+    let rstr = "";
+    if(instruction & 0x0100) {
+        // Register
+        bitNo = this.registers[(instruction >> 9) & 0b111];
+        rstr = "r"+((instruction >> 9) & 0b111);
+    }else{
+        // Immediate
+        bitNo = this.pcAndAdvance(1);
+        rstr = "#$"+bitNo.toString(16);
+    }
+    
+    let mask;
+    let value;
+    if((effectiveAddress & 0b111000) == 0b000000) {
+        // Register
+        mask = 1 << (bitNo % 32);
+        value = this.registers[effectiveAddress];
+        
+        if(chg) {
+            this.registers[effectiveAddress] ^= mask;
+        }else if(clr) {
+            this.time += 2;
+            this.registers[effectiveAddress] &= ~mask;
+        }else if(set) {
+            this.registers[effectiveAddress] |= mask;
+        }else{
+            this.time -= 2;
+        }
+    }else{
+        // Address
+        mask = 1 << (bitNo % 8);
+        let addr = this.addressEa(effectiveAddress, 1)
+        value = this.emu.readMemory8(addr);
+        this.time += 4;
+        
+        if(chg) {
+            this.emu.writeMemory8(addr, value ^ mask);
+        }else if(clr) {
+            this.emu.writeMemory8(addr, value & ~mask);
+        }else if(set) {
+            this.emu.writeMemory8(addr, value | mask);
+        }else{
+            this.time -= 4;
+        }
+    }
+    
+    let ccr = this.registers[CCR];
+    ccr &= ~Z;
+    ccr |= (value & mask) ? 0 : Z;
+    this.registers[CCR] = ccr;
+    
+    let name = "btst";
+    if(chg) {
+        name = "bchg";
+    }else if(clr) {
+        name = "bclr";
+    }else if(set) {
+        name = "bset";
+    }
+    
+    this.log("> "+name+" "+rstr+","+this.eaStr(effectiveAddress, 1, oldPc));
+    
+    return true;
+};
+
+opFns[CHK] = function fn_CHK(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> chk");
+    this.time += 6;
+    let register = (instruction >> 9) & 0b111;
+    let upper = makeSigned(this.readEa(effectiveAddress, 2), 2);
+    let comp = makeSigned(this.registers[register] & lengthMask(2), 2);
+    
+    if(comp < 0 || comp > upper) {
+        let ccr = this.registers[CCR] & X;
+        ccr |= (comp < 0) ? N : 0;
+        this.registers[CCR] = ccr;
+        
+        this.trap(EX_CHK);
+    }
+};
+
+opFns[CLR] = function fn_CLR(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> clr");
+    let [length, tmp] = getOperandLength(instruction, false);
+    
+    if((effectiveAddress & 0b111000) == 0b000000) {
+        // Register
+        this.registers[effectiveAddress] &= ~lengthMask(length);
+        if(length == 4) this.time += 2;
+    }else{
+        // Address
+        let addr = this.addressEa(effectiveAddress, length);
+        this.emu.readMemoryN(addr, length); // A read still occurs according to the manual
+        this.emu.writeMemoryN(addr, 0, length);
+        this.time += 4;
+        if(length == 4) this.time += 4;
+    }
+    
+    let ccr = this.registers[CCR] & X;
+    ccr |= Z;
+    this.registers[CCR] = ccr;
+    
+    return true;
+};
+
+opFns[CMPM] = function fn_CMPM(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> cmpm");
+    let src = instruction & 0b111;
+    let dst = (instruction >> 9) & 0b111;
+    let length = 0;
+    let tmp;
+    let sm;
+    let dm;
+    
+    [length, tmp] = getOperandLength(instruction, true);
+    
+    sm = this.readEa(0b011000 & src, length);
+    dm = this.readEa(0b011000 & dst, length);
+    
+    tmp[0] = dm;
+    tmp[0] -= sm;
+    
+    this.registers[CCR] = this.subCcr(dm, sm, tmp[0], length, false);
+    
+    return true;
+};
+
+opFns[CMPI] = function fn_CMPI(opcode, instruction, effectiveAddress, oldPc) {
+    let [length, immediate, tmp] = this.getImmediate(instruction);
+    
+    if(length == 4 && (effectiveAddress & 0b111000) == 0) {
+        this.time += 2;
+    }
+    
+    let ea = this.readEa(effectiveAddress, length);
+    tmp[0] = ea;
+    tmp[0] -= immediate;
+    
+    this.registers[CCR] = this.subCcr(ea, immediate, tmp[0], length);
+    
+    this.log("> cmpi" + lengthString(length) +
+        " #$"+immediate.toString(16) + "," + this.eaStr(effectiveAddress, length, oldPc));
+    
+    return true;
+};
+
+opFns[DIVS] = function fn_DIVS(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> divs");
+    this.time += 154;
+    let source = makeSigned(this.readEa(effectiveAddress, 2), 2);
+    let reg = (instruction >> 9) & 0b111;
+    let dest = makeSigned(this.registers[reg], 4); // "divides a long word by a word"
+    
+    if(source == 0) {
+        this.trap(EX_DIV0);
+        return true;
+    }
+    
+    let result = ~~(dest / source);
+    let remainder = (dest % source) * (dest < 0 ? -1 : 1);
+    
+    let ccr = this.registers[CCR] & X;
+    ccr |= result == 0 ? Z : 0;
+    ccr |= result < 0 ? N : 0;
+    if((result > 0x7fff) || (result < -0x7fff)) {
+        // Overflow!
+        ccr |= V;
+    }else{
+        this.registers[reg] = ((remainder & 0xffff) << 16) | (result & 0xffff);
+    }
+    
+    this.registers[CCR] = ccr;
+    
+    return true;
+};
+
+opFns[DIVU] = function fn_DIVU(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> divu");
+    this.time += 136;
+    let source = this.readEa(effectiveAddress, 2);
+    let reg = (instruction >> 9) & 0b111;
+    let dest = this.registers[reg]; // "divides a long word by a word"
+    
+    if(source == 0) {
+        this.trap(EX_DIV0);
+        return true;
+    }
+    
+    let result = dest / source;
+    let remainder = dest % source;
+    
+    let ccr = this.registers[CCR] & X;
+    ccr |= result == 0 ? Z : 0;
+    ccr |= result < 0 ? N : 0;
+    if(result > 0xffff) {
+        // Overflow!
+        ccr |= V;
+    }else{
+        this.registers[reg] = ((remainder & 0xffff) << 16) | (result & 0xffff);
+    }
+    
+    this.registers[CCR] = ccr;
+    
+    return true;
+};
+
+opFns[EXG] = function fn_EXG(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> exg");
+    this.time += 2;
+    let mode = (instruction >> 3) & 0b11111;
+    let rx = (instruction >> 9) & 0b111;
+    let ry = instruction & 0b111;
+    
+    if((mode & 0b1) == 0b1) {
+        ry += ABASE;
+    }
+    
+    if(mode == 0b01001) {
+        rx += ABASE;
+    }
+    
+    let tmp = this.registers[ry];
+    this.registers[ry] = this.registers[rx];
+    this.registers[rx] = tmp;
+    
+    return true;
+};
+
+opFns[EXT] = function fn_EXT(opcode, instruction, effectiveAddress, oldPc) {
+    let reg = instruction & 0b111;
+    let dat = 0;
+    
+    if(instruction & 0x0040) {
+        // Word > long
+        dat = makeSigned(this.registers[reg] & lengthMask(2), 2);
+        this.registers[reg] = dat & lengthMask(4);
+        
+        this.log("> ext.l d"+reg);
+    }else{
+        // Byte > word
+        dat = makeSigned(this.registers[reg] & lengthMask(1), 1);
+        this.registers[reg] &= ~lengthMask(2);
+        this.registers[reg] |= dat & lengthMask(2);
+        this.log("> ext.w d"+reg);
+    }
+    
+    let ccr = this.registers[CCR] & X;
+    ccr |= dat == 0 ? Z : 0;
+    ccr |= dat < 0 ? N : 0;
+    this.registers[CCR] = ccr;
+    return true;
+};
+
+opFns[ILLEGAL] = function fn_ILLEGAL(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> illegal");
+    
+    this.trap(EX_ILLEGAL);
+    return true;
+};
+
+opFns[LEA] = function fn_LEA(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> lea");
+    // TODO: Use only supported modes
+    let reg = (instruction & 0x0e00) >>> 9;
+    this.registers[ABASE + reg] = this.addressEa(effectiveAddress, 4);
+    return true;
+};
+
+opFns[LINK] = function fn_LINK(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> link");
+    let reg = (instruction & 0b111) + ABASE;
+    let displacement = makeSigned(this.pcAndAdvance(2), 2);
+    
+    this.registers[SP] -= 4;
+    this.emu.writeMemory(this.registers[SP], this.registers[reg], 4);
+    this.registers[reg] = this.registers[SP];
+    this.registers[SP] += displacement;
+    return true;
+};
+
+opFns[MOVEQ] = function fn_MOVEQ(opcode, instruction, effectiveAddress, oldPc) {
+    let data = instruction & 0x00ff;
+    let reg = (instruction >> 9) & 0b111;
+    
+    this.registers[reg] = makeSigned(data, 1);
+    
+    let ccr = this.registers[CCR] & X;
+    ccr |= isNegative(this.registers[reg], 4) ? N : 0;
+    ccr |= this.registers[reg] == 0 ? Z : 0;
+    this.registers[CCR] = ccr;
+    
+    this.log("> moveq #$"+data.toString(16)+",d"+reg);
+    
+    return true;
+};
+
+opFns[MOVEP] = function fn_MOVEP(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> movep");
+    console.error("MOVEP not supported");
+};
+
+opFns[MULS] = function fn_MULS(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> muls");
+    let register = (instruction >> 9) & 0b111;
+    this.time += 66;
+    
+    let a = makeSigned(this.readEa(effectiveAddress, 2), 2);
+    let b = makeSigned(this.registers[register] & 0xffff, 2);
+    let result = a * b;
+    
+    this.registers[register] = result;
+    
+    let ccr = this.registers[CCR] & X;
+    ccr |= result == 0 ? Z : 0;
+    ccr |= result < 0 ? N : 0;
+    this.registers[CCR] = ccr;
+    
+    return true;
+};
+
+opFns[MULU] = function fn_MULU(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> mulu");
+    let register = (instruction >> 9) & 0b111;
+    this.time += 66;
+    
+    let a = this.readEa(effectiveAddress, 2);
+    let b = this.registers[register] & 0xffff;
+    let result = a * b;
+    
+    this.registers[register] = result;
+    
+    let ccr = this.registers[CCR] & X;
+    ccr |= result == 0 ? Z : 0;
+    ccr |= (result & 0x80000000) ? N : 0;
+    this.registers[CCR] = ccr;
+    
+    return true;
+};
+
+opFns[MOVE_USP] = function fn_MOVE_USP(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> move usp");
+    if(this.mode == USER) {
+        this.trap(EX_PRIV_VIO);
+    }else{
+        let reg = ABASE + (instruction & 0b111);
+        
+        if(instruction & 0x0080) {
+            // Stack > address
+            this.registers[reg] = this.oldSp;
+        }else{
+            // Address > stack
+            this.oldSp = this.registers[reg];
+        }
+    }
+    return true;
+};
+
+opFns[NEG] = opFns[NEGX] = function fn_NEGX(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> neg/negx");
+    let [length, tmp] = getOperandLength(instruction, false);
+    let x = (instruction & 0x0400) == 0;
+    let xdec = (x && (this.registers[CCR] & X)) ? 1 : 0;
+    
+    tmp[0] = 0;
+    if(effectiveAddress & 0b111000) {
+        // Memory location
+        let addr = this.addressEa(effectiveAddress, length);
+        let val = this.emu.readMemoryN(addr, length);
+        
+        tmp[0] -= val;
+        
+        this.registers[CCR] = this.subCcr(0, val, tmp[0], length, true, x);
+        
+        tmp[0] -= xdec;
+        
+        this.emu.writeMemoryN(addr, tmp[0], length);
+        this.time += 4;
+        if(length == 4) this.time += 4;
+    }else{
+        // Register
+        let val = this.registers[effectiveAddress] & lengthMask(length);
+        
+        tmp[0] -= val;
+        
+        this.registers[CCR] = this.subCcr(0, val, tmp[0], length, true, x);
+        
+        tmp[0] -= xdec;
+        
+        this.registers[effectiveAddress] &= ~lengthMask(length);
+        this.registers[effectiveAddress] |= tmp[0];
+        
+        if(length == 4) this.time += 2;
+    }
+    
+    return true;
+};
+
+opFns[PEA] = function fn_PEA(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> pea");
+    
+    this.registers[SP] -= 4;
+    this.emu.writeMemory32(this.registers[SP], this.addressEa(effectiveAddress, 4), 4);
+    return true;
+};
+
+opFns[SUB_SUBA] = function fn_SUB_SUBA(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> sub/suba");
+    let register = (instruction >> 9) & 0b111;
+    let opmode = (instruction >> 6) & 0b111;
+    let length = 0;
+    let tmp;
+    
+    [length, tmp] = getOperandLength(instruction, true);
+    
+    // Do the math
+    if((opmode & 0b011) == 0b011) {
+        // < ea > - An -> An
+        this.time += 4;
+        register += ABASE;
+        let ea = makeSigned(this.readEa(effectiveAddress, length), length);
+        
+        this.registers[register] -= ea;
+    }else{
+        // < ea > + Dn -> Dn / < ea >
+        let eaAddr = 0;
+        let ea = 0;
+        let reg = this.registers[register] & lengthMask(length);
+        
+        if(opmode & 0b100) {
+            // < ea > - dn -> < ea >
+            eaAddr = this.addressEa(effectiveAddress, length);
+            ea = this.emu.readMemoryN(eaAddr, length);
+            tmp[0] = ea;
+            tmp[0] -= reg;
+            
+            this.registers[CCR] = this.subCcr(ea, reg, tmp[0], length, true);
+            
+            this.time += 4;
+            this.emu.writeMemoryN(eaAddr, tmp[0], length);
+        }else{
+            // dn - < ea > -> dn
+            ea = this.readEa(effectiveAddress, length);
+            
+            tmp[0] = reg;
+            tmp[0] -= ea;
+            
+            this.registers[CCR] = this.subCcr(reg, ea, tmp[0], length, true);
+            
+            this.registers[register] &= ~lengthMask(length);
+            this.registers[register] |= tmp[0];
+        }
+    }
+    
+    return true;
+};
+
+opFns[SUBX] = function fn_SUBX(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> subx");
+    console.error("SUBX opcode not yet supported.");
+    return false;
+};
+
+opFns[NOT] = function fn_NOT(opcode, instruction, effectiveAddress, oldPc) {
+    let [length, tmp] = getOperandLength(instruction, false);
+    let val = 0;
+    
+    if(effectiveAddress & 0b111000) {
+        // Memory location
+        let addr = this.addressEa(effectiveAddress, length);
+        val = this.emu.readMemoryN(addr, length);
+        
+        this.emu.writeMemoryN(addr, ~val, length);
+        this.time += 4;
+        if(length == 4) this.time += 4;
+    }else{
+        // Register
+        val = this.registers[effectiveAddress] & lengthMask(length);
+        
+        this.registers[effectiveAddress] &= ~lengthMask(length);
+        this.registers[effectiveAddress] |= ~val & lengthMask(length);
+        
+        if(length == 4) this.time += 2;
+    }
+    
+    let ccr = this.registers[CCR] & X;
+    ccr |= val == 0 ? Z : 0;
+    ccr |= isNegative(~val, length) ? N : 0;
+    this.registers[CCR] = ccr;
+    
+    this.log("> not"+lengthString(length)+" "+this.eaStr(effectiveAddress));
+    
+    return true;
+};
+
+opFns[MOVEM_TO_REG] = function fn_MOVEM_TO_REG(opcode, instruction, effectiveAddress, oldPc) {
+    let noEffectiveAddress = instruction & ~effectiveAddress;
+    let length = 2;
+    if(noEffectiveAddress == 0x4cc0) {
+        length = 4;
+    }
+    
+    let mask = this.pcAndAdvance(2);
+    
+    let val = 0;
+    let inc = false;
+    let addr = 0;
+    if((effectiveAddress & 0b111000) == 0b011000) {
+        inc = true;
+    }else{
+        addr = this.addressEa(effectiveAddress, length);
+    }
+    
+    this.time += 8;
+    for(let a = 0; a <= 15; a ++) {
+        if(mask & (1 << a)) {
+            if(inc) {
+                val = this.readEa(effectiveAddress, length);
+            }else{
+                val = this.emu.readMemoryN(addr, length);
+                addr += length;
+            }
+            
+            this.registers[a] = makeSigned(val, length);
+        }
+    }
+    
+    this.log("> movem"+lengthString(length)+" "+this.eaStr(effectiveAddress)+",#$"+mask.toString(16));
+    
+    return true;
+};
+
+opFns[MOVEM_TO_MEM] = function fn_MOVEM_TO_MEM(opcode, instruction, effectiveAddress, oldPc) {
+    let noEffectiveAddress = instruction & ~effectiveAddress;
+    let length = 2;
+    if(noEffectiveAddress == 0x48c0) {
+        length = 4;
+    }
+    
+    let mask = this.pcAndAdvance(2);
+    
+    let val = 0;
+    let dec = false;
+    let addr = 0;
+    if((effectiveAddress & 0b111000) == 0b100000) {
+        dec = true;
+    }else{
+        addr = this.addressEa(effectiveAddress, length);
+    }
+    
+    let reg = effectiveAddress & 0b111;
+    let init = this.registers[ABASE + reg];
+    this.time += 4;
+    for(let a = 0; a <= 15; a ++) {
+        if(mask & (1 << a)) {
+            let r = dec ? 15 - a : a;
+            
+            if(r == reg + ABASE) {
+                val = init;
+            }else{
+                val = this.registers[r];
+            }
+            
+            if(dec) {
+                this.writeEa(effectiveAddress, val, length);
+            }else{
+                this.emu.writeMemoryN(addr, val, length);
+                addr += length;
+            }
+        }
+    }
+    
+    this.log("> movem"+lengthString(length)+" #$"+mask.toString(16)+","+this.eaStr(effectiveAddress));
+    
+    return true;
+};
+
+opFns[RESET] = function fn_RESET(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> reset");
+    // Apparently this has no effect?
+    return true;
+};
+
+opFns[ROL_ROR_REG] = function fn_ROL_ROR_REG(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> rol/ror (register)");
+    let [cr, left, length, regNo] = this.getShift(instruction);
+    
+    this.time += 2 + (2 * cr);
+    if(length == 4) this.time += 2;
+    
+    let value = this.registers[regNo] & lengthMask(length);
+    let tmp = 0;
+    
+    for(let i = 0; i < cr; i ++) {
+        if(left) {
+            tmp = value >>> (length * 8 - 1);
+            value <<= 1;
+            value |= tmp;
+            value &= lengthMask(length);
+        }else{
+            // Right
+            tmp = value & 0b1;
+            value >>>= 1;
+            value |= (tmp << (length * 8 - 1));
+        }
+    }
+    
+    this.registers[regNo] = (this.registers[regNo] & ~lengthMask(length)) | (value & lengthMask(length));
+    
+    let ccr = this.registers[CCR] & X;
+    ccr |= tmp ? C : 0;
+    ccr |= isNegative(value, length) ? N : 0;
+    ccr |= value == 0 ? Z : 0;
+    this.registers[CCR] = ccr;
+    
+    return true;
+};
+
+opFns[ROL_ROR_MEM] = function fn_ROL_ROR_MEM(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> rol/ror (memory)");
+    console.error("ROL/ROR with memory not implemented yet");
+    return false;
+};
+
+opFns[ROXL_ROXR_REG] = function fn_ROXL_ROXR_REG(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> roxl/roxr (register)");
+    let [cr, left, length, regNo] = this.getShift(instruction);
+    
+    this.time += 2 + (2 * cr);
+    if(length == 4) this.time += 2;
+    
+    let value = this.registers[regNo] & lengthMask(length);
+    let tmp = 0;
+    let tmp2 = 0;
+    let x = (this.registers[CCR] & X) ? 1 : 0;
+    
+    for(let i = 0; i < cr; i ++) {
+        if(left) {
+            tmp = x;
+            x = value >>> (length * 8 - 1);
+            value <<= 1;
+            value |= tmp;
+            value &= lengthMask(length);
+        }else{
+            // Right
+            tmp = x;
+            x = value & 0b1;
+            value >>>= 1;
+            value |= (tmp << (length * 8 - 1));
+        }
+    }
+    
+    this.registers[regNo] = (this.registers[regNo] & ~lengthMask(length)) | (value & lengthMask(length));
+    
+    if(cr == 0) {
+        let ccr = this.registers[CCR] & X;
+        ccr |= ccr ? C : 0; // Set to the value of the extend bit
+        ccr |= isNegative(value, length) ? N : 0;
+        ccr |= value == 0 ? Z : 0;
+        this.registers[CCR] = ccr;
+    }else{
+        let ccr = 0;
+        ccr |= x ? (C | X) : 0;
+        ccr |= isNegative(value, length) ? N : 0;
+        ccr |= value == 0 ? Z : 0;
+        this.registers[CCR] = ccr;
+    }
+    
+    return true;
+};
+
+opFns[ROXL_ROXR_MEM] = function fn_ROXL_ROXR_MEM(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> roxl/roxr (memory)");
+    console.error("ROXL/ROXR with memory not implemented yet");
+    return false;
+};
+
+opFns[RTE] = function fn_RTE(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> rte");
+    
+    let sr = this.emu.readMemory(this.registers[SP]);
+    this.registers[CCR] = sr & 0x00ff;
+    this.registers[SR] = sr & 0xff00;
+    this.registers[SP] += 2;
+    
+    this.registers[PC] = this.emu.readMemory32(this.registers[SP]);
+    this.registers[SP] += 4;
+    
+    this.changeMode(sr & S ? SUPER : USER);
+    this.time += 16;
+    
+    return true;
+};
+
+opFns[RTR] = function fn_RTR(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> rtr");
+    
+    this.time += 16;
+    this.registers[CCR] = this.emu.readMemory(this.registers[SP]);
+    this.registers[SP] += 2;
+    this.registers[PC] = this.emu.readMemory32(this.registers[SP]);
+    this.registers[SP] += 4;
+    
+    return true;
+};
+
+opFns[RTS] = function fn_RTS(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> rts");
+    
+    this.time += 12;
+    this.registers[PC] = this.emu.readMemory32(this.registers[SP]);
+    this.registers[SP] += 4;
+    
+    return true;
+};
+
+opFns[SBCD] = function fn_SBCD(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> sbcd");
+    console.error("SBCD not implemented yet");
+    return false;
+};
+
+opFns[SCC] = function fn_SCC(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> scc");
+    
+    let condition = (instruction & 0x0f00) >>> 8;
+    
+    if(effectiveAddress & 0b111000) {
+        // Memory
+        let addr = this.addressEa(effectiveAddress, 1);
+        this.emu.readMemory8(addr, 1); // "A memory address is read before it is written"
+        if(doCondition(condition, this.registers[CCR])) {
+            this.emu.writeMemory8(addr, 0xff, 1);
+        }else{
+            this.emu.writeMemory8(addr, 0x00, 1);
+        }
+        this.time += 8;
+    }else{
+        // Register
+        if(doCondition(condition, this.registers[CCR])) {
+            this.writeEa(effectiveAddress, 0xff, 1);
+            this.time += 2;
+        }else{
+            this.writeEa(effectiveAddress, 0x00, 1);
+        }
+    }
+    
+    
+    return true;
+};
+
+opFns[STOP] = function fn_STOP(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> stop");
+    
+    if(this.mode != SUPER) {
+        this.trap(EX_PRIV_VIO);
+    }else{
+        let val = this.pcAndAdvance(2);
+        
+        this.registers[CCR] = val & 0x00ff;
+        this.registers[SR] = val & 0xff00;
+        this.changeMode((val & S) ? SUPER : USER);
+        this.time += 8;
+        
+        this.stopped = true;
+    }
+    return true;
+};
+
+opFns[SWAP] = function fn_SWAP(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> swap");
+    let reg = instruction & 0b111;
+    
+    let high = this.registers[reg] << 16;
+    this.registers[reg] >>>= 16;
+    this.registers[reg] |= high;
+    
+    let ccr = this.registers[CCR] & X;
+    ccr |= this.registers[reg] == 0 ? Z : 0;
+    ccr |= isNegative(this.registers[reg], 4) ? N : 0;
+    this.registers[CCR] = ccr;
+    
+    return true;
+};
+
+opFns[TRAP] = function fn_TRAP(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> trap");
+    // TODO: Timing
+    this.trap((instruction & 0x0f) + 32);
+    
+    return true;
+};
+
+opFns[TRAPV] = function fn_TRAPV(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> trapv");
+    // TODO: Timing
+    this.trap(EX_TRAPV);
+    
+    return true;
+};
+
+opFns[UNLK] = function(opcode, instruction, effectiveAddress, oldPc) {
+    this.log("> unlk");
+    this.time += 8;
+    
+    let reg = ABASE + (instruction & 0b111);
+    
+    this.registers[SP] = this.registers[reg];
+    this.registers[reg] = this.emu.readMemory32(this.registers[SP]);
+    this.registers[SP] += 4;
+    
+    return true;
+};
