@@ -72,7 +72,7 @@ masks[ORI] = [0xff00, 0x0000, (x) => ((x >> 6) & 0b11) != 0b11 && (x & 0x0038) !
 const SHIFT_REG = Symbol("SHIFT_REG");
 masks[SHIFT_REG] = [0xf010, 0xe000, (x) => (x & 0x00c0) != 0x00c0];
 const SHIFT_MEM = Symbol("SHIFT_MEM");
-masks[SHIFT_MEM] = [0xfec0, 0xe2c0];
+masks[SHIFT_MEM] = [0xfec0, 0xe0c0];
 const BMOD_REG = Symbol("BMOD_REG"); // btst/bchg/bclr/bset
 masks[BMOD_REG] = [0xf100, 0x0100, (x) => (x & 0x0038) != 0x0008];
 const BMOD_IMM = Symbol("BMOD_IMM"); // btst/bchg/bclr/bset
@@ -865,9 +865,6 @@ export class M68k {
         
         // Decode instruction
         let opcode = this.getInstruction(instruction);
-        if(opcode == ILLEGAL) {
-            console.error("Illegal instruction 0x"+instruction.toString(16));
-        }
         
         // Debug information
         this.heat[opcodes.indexOf(opcode)] ++;
@@ -880,7 +877,8 @@ export class M68k {
         
         let effectiveAddress = instruction & ~0xffc0;
         
-        this.log("-- Running instruction 0x" + instruction.toString(16) + " ("+opcode.toString()+") from 0x" + oldPc.toString(16));
+        if(DEBUG || LOGGING) this.log("-- Running instruction 0x" + instruction.toString(16) +
+            " ("+opcode.toString()+") from 0x" + oldPc.toString(16));
         
         if(opcode in opFns) {
             return opFns[opcode].call(this, opcode, instruction, effectiveAddress, oldPc);
@@ -1166,7 +1164,7 @@ opFns[SHIFT_REG] = opFns[SHIFT_MEM] = function fn_SHIFT_MEM(opcode, instruction,
             if(logical) {
                 val >>>= 1;
             }else{
-                value = makeSigned(value, 2);
+                val = makeSigned(val, 2);
                 val >>= 1;
             }
         }
@@ -1942,7 +1940,22 @@ opFns[EXT] = function fn_EXT(opcode, instruction, effectiveAddress, oldPc) {
 opFns[ILLEGAL] = function fn_ILLEGAL(opcode, instruction, effectiveAddress, oldPc) {
     this.log("> illegal");
     
-    this.trap(EX_ILLEGAL);
+    console.error("Illegal instruction 0x"+instruction.toString(16));
+    
+    switch(this.emu.options.invalidOp) {
+        case "crash":
+            this.crashed = true;
+            break;
+        
+        case "ignore":
+            // do nothing
+            break;
+            
+        case "trap":
+            this.trap(EX_ILLEGAL);
+            break;
+    }
+    
     return true;
 };
 

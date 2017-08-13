@@ -368,7 +368,7 @@ let render = function(composeBuffer, displayBuffer) {
         
         // H interrupt
         if(registers[RM1] & 0x10) {
-            if(y % registers[RHORINT_C] == 0) {
+            if(y && y % registers[RHORINT_C] == 0) {
                 registers[REX] = 0x4;
             }
         }

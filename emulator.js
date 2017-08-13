@@ -29,6 +29,9 @@ export class Emulator {
         if(this.options.region === undefined) {
             this.options.region = "ntsc";
         }
+        if(!["crash", "ignore", "trap"].includes(this.options.invalidOp)) {
+            this.options.invalidOp = "trap";
+        }
         
         this.mainRam = new DataView(new ArrayBuffer(1024*64));
         this.rom = null;

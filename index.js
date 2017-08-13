@@ -2,7 +2,7 @@
 
 import {Emulator} from "./emulator.js";
 
-window.emulator = new Emulator();
+window.emulator = new Emulator({invalidOp:"crash"});
 
 window.load = function() {
     let f = document.querySelector("input[type=file]").files[0];
