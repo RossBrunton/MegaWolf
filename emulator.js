@@ -2,7 +2,7 @@
 
 import {M68k} from "./m68k.js";
 import {Z80} from "./z80.js";
-import {Controller} from "./controller.js";
+import {Controller, Gamepad3} from "./controller.js";
 import {Vdp} from "./vdp.js"
 
 export const NTSC = "ntsc";
@@ -43,7 +43,7 @@ export class Emulator {
         
         this.m68kOwnBus = false;
         
-        this.ports = [new Controller(), new Controller(), new Controller()];
+        this.ports = [new Gamepad3(65, 79, 69, 13), new Controller(), new Controller()];
         
         this.time = 0;
         this.displayCounter = 0.0;
