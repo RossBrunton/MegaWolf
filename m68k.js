@@ -1097,7 +1097,6 @@ opFns[ADD_ADDA] = function fn_ADD_ADDA(opcode, instruction, effectiveAddress, ol
 };
 
 opFns[CMP_CMPA] = function fn_CMP_CMPA(opcode, instruction, effectiveAddress, oldPc) {
-    this.log("> cmp/cmpa");
     let register = (instruction >> 9) & 0b111;
     let opmode = (instruction >> 6) & 0b111;
     let length = 0;
@@ -1108,30 +1107,25 @@ opFns[CMP_CMPA] = function fn_CMP_CMPA(opcode, instruction, effectiveAddress, ol
     
     // Do the math
     if((opmode & 0b011) == 0b011) {
-        // An - < ea >
-        this.time += 2;
+        // It's cmpa
+        this.log("> cmpa a"+register+","+this.eaStr(effectiveAddress, length, oldPc));
         register += ABASE;
-        let ea = this.readEa(effectiveAddress, length);
-        
-        let reg = this.registers[register] & lengthMask(length);
-        tmp[0] = reg;
-        tmp[0] -= ea;
-        
-        this.registers[CCR] = this.subCcr(reg, ea, tmp[0], length);
     }else{
-        // Dn - < ea >
-        if(length == 4) {
-            this.time += 2;
-        }
-        let eaAddr = 0;
-        let ea = this.readEa(effectiveAddress, length);
-        
-        let reg = this.registers[register] & lengthMask(length);
-        tmp[0] = reg;
-        tmp[0] -= ea;
-        
-        this.registers[CCR] = this.subCcr(reg, ea, tmp[0], length);
+        this.log("> cmp d"+register+","+this.eaStr(effectiveAddress, length, oldPc));
     }
+    
+    // D/An - < ea >
+    if(length == 4) {
+        this.time += 2;
+    }
+    let eaAddr = 0;
+    let ea = this.readEa(effectiveAddress, length);
+    
+    let reg = this.registers[register] & lengthMask(length);
+    tmp[0] = reg;
+    tmp[0] -= ea;
+    
+    this.registers[CCR] = this.subCcr(reg, ea, tmp[0], length);
     
     return true;
 };
@@ -1325,7 +1319,7 @@ opFns[MOVE_FROM_SR] = function fn_MOVE_FROM_SR(opcode, instruction, effectiveAdd
     
     if(effectiveAddress & 0b111000) {
         // Memory
-        let addr = this.addressEa(val, 2);
+        let addr = this.addressEa(effectiveAddress, 2);
         this.emu.readMemory(addr);
         this.emu.writeMemory(addr, val);
         this.time += 4;
@@ -1371,7 +1365,7 @@ opFns[JMP] = function fn_JMP(opcode, instruction, effectiveAddress, oldPc) {
     this.registers[PC] = this.addressEa(effectiveAddress, 4);
     this.time += 4;
     
-    this.log("> jmp #$"+this.registers[PC].toString(16));
+    this.log("> jmp #$"+this.eaStr(effectiveAddress, length, oldPc));
     
     return true;
 };
@@ -1423,9 +1417,9 @@ opFns[ANDI_TO_SR] = opFns[EORI_TO_SR] = opFns[ORI_TO_SR] = function fn_ORI_TO_SR
         let val = this.registers[SR] | this.registers[CCR];
         
         switch(instruction) {
-            case 0x027c: val &= tmp; break; // andi
-            case 0x0a7c: val ^= tmp; break; // eori
-            case 0x007c: val |= tmp; break; // ori;
+            case 0x027c: val &= op; break; // andi
+            case 0x0a7c: val ^= op; break; // eori
+            case 0x007c: val |= op; break; // ori;
             default: console.error("andi/eori/ori... How did I get here?"); break;
         }
         

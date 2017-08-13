@@ -146,6 +146,8 @@ let getHScroll = function(plane, line) {
 }
 
 let raf = function() {
+    registers[RSTATUS] &= ~0x0088; // Clear VIP and VB
+    
     if(!waitingForBuffer) { // If we don't have our buffer, do nothing
         let frame = doFrame();
         
@@ -157,7 +159,9 @@ let raf = function() {
     // VBlank interrupt
     if(registers[RM2] & 0x20) {
         registers[REX] = 6;
+        registers[RSTATUS] |= 0x0080; // Set VIP
     }
+    registers[RSTATUS] |= 0x0008; // Set VB
 }
 
 // Gets a pointer to a cell for a given x, y cell on the given plane
