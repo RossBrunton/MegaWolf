@@ -956,30 +956,7 @@ export class M68k {
             case TAS: {
                 this.log("> tas");
                 
-                if(effectiveAddress & 0b111000) {
-                    // Memory
-                    this.time += 6;
-                    let addr = this.addressEa(effectiveAddress, 1);
-                    
-                    let val = this.emu.readMemory8(addr);
-                    
-                    let ccr = this.registers[CCR] & X;
-                    ccr |= val == 0 ? Z : 0;
-                    ccr |= isNegative(val, 1) ? N : 0;
-                    this.registers[CCR] = ccr;
-                    
-                    val |= 0x80;
-                    this.emu.writeMemory8(addr, val);
-                }else{
-                    // Register
-                    let ccr = this.registers[CCR] & X;
-                    ccr |= (this.registers[effectiveAddress] & 0xff) == 0 ? Z : 0;
-                    ccr |= isNegative(this.registers[effectiveAddress] & 0xff, 1) ? N : 0;
-                    this.registers[CCR] = ccr;
-                    
-                    this.registers[effectiveAddress] |= 0x80;
-                }
-                
+                // TAS does nothing on a mega drive (at least, version 1 and 2
                 
                 return true;
             }
