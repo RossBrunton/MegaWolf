@@ -308,6 +308,7 @@ export class Emulator {
             this.vdp.handleFrame();
             this.displayCounter -= 1.0;
         }
+        this.z80.doFrame(factor);
         
         if(this.options.region == PAL) {
             this.time += ~~((PAL_CLOCK / FPS) * factor);
