@@ -26,7 +26,10 @@ export class Z80 {
         this.sharedBuff = new SharedArrayBuffer(0);
         this.shared = new Uint32Array(this.sharedBuff);
         
-        this.worker.postMessage([MSG_INIT, [this.sharedBuff, this.emu.options]]);
+        this.ramBuff = new SharedArrayBuffer(8 * 1024);
+        this.ram = new DataView(this.ramBuff);
+        
+        this.worker.postMessage([MSG_INIT, [this.sharedBuff, this.emu.options, this.ramBuff]]);
         this.worker.onmessage = this.message.bind(this);
         
         this.reset = true;
@@ -72,5 +75,25 @@ export class Z80 {
     
     doFrame(factor) {
         this.worker.postMessage([MSG_FRAME, [factor]]);
+    }
+    
+    readMemory(i) {
+        i = i & 0xffff;
+        
+        if(i < 0x4000) {
+            // Memory
+            i &= 0x1fff;
+            return this.ram.getUint16(i, false);
+        }
+    }
+    
+    writeMemory(i, val) {
+        i = i & 0xffff;
+        
+        if(i < 0x4000) {
+            // Memory
+            i &= 0x1fff;
+            return this.ram.setUint16(i, val, false);
+        }
     }
 }

@@ -93,6 +93,11 @@ export class Emulator {
             return this.rom.getUint16(addr, false);
         }
         
+        if(addr >= 0xa00000 && addr < 0xa10000) {
+            // Z80 address space
+            this.z80.readMemory(addr);
+        }
+        
         if(addr > 0xe00000) {
             // Main RAM
             return this.mainRam.getUint16(addr & 0x00ffff, false);
@@ -149,6 +154,11 @@ export class Emulator {
             // Main RAM
             this.mainRam.setUint16(addr & 0x00ffff, value, false);
             return;
+        }
+        
+        if(addr >= 0xa00000 && addr < 0xa10000) {
+            // Z80 address space
+            this.z80.writeMemory(addr, value);
         }
         
         // Memory IO
