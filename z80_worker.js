@@ -105,7 +105,7 @@ let doFrame = function(factor) {
     }
 };
 
-let getMemory8 = function(i) {
+let readMemory8 = function(i) {
     if(i < 0x4000) {
         // RAM
         i &= 0x1fff;
@@ -116,15 +116,22 @@ let getMemory8 = function(i) {
     return 0;
 };
 
-let getMemory16 = function(i) {
+let readMemory16 = function(i) {
+    if(i < 0x4000) {
+        // RAM
+        i &= 0x1fff;
+        return ram.getUint16(i, true);
+    }
     
+    console.error("[Z80_w] Invalid memory read 0x"+i.toString(16));
+    return 0;
 };
 
-let getMemoryN = function(i, n) {
+let readMemoryN = function(i, n) {
     if(n == 1) {
-        return getMemory8(i);
+        return readMemory8(i);
     }else{
-        return getMemory16(i);
+        return readMemory16(i);
     }
 };
 
@@ -139,7 +146,13 @@ let writeMemory8 = function(i, val) {
 };
 
 let writeMemory16 = function(i, val) {
+    if(i < 0x4000) {
+        // RAM
+        i &= 0x1fff;
+        ram.setUint16(i, val, true);
+    }
     
+    console.error("[Z80_w] Invalid memory write 0x"+i.toString(16));
 };
 
 let writeMemoryN = function(i, val, n) {
@@ -187,8 +200,14 @@ let setRegPair = function(pair, val) {
 };
 
 let pcAndAdvance = function(length) {
-    let toRet = getMemoryN(reg16[PC], length);
-    reg16[PC] += length;
+    let toRet;
+    if(length == 1) {
+        toRet = readMemory8(reg16[PC]);
+        reg16[PC] += 1;
+    }else{
+        toRet = pcAndAdvance(1);
+        toRet |= pcAndAdvance(1) << 8;
+    }
     return toRet;
 };
 
@@ -268,7 +287,7 @@ let getIndirect = function() {
     if(indirect == 0b111) {
         return getRegPair(HL);
     }else{
-        return reg16[indirect] + indirectDisplacement;
+        return reg16[indirect];
     }
 }
 
@@ -339,8 +358,7 @@ rootOps[0x3a] = function(instruction, oldPc) {
     log("> ld a,(nn)");
     time += 13;
     
-    let n = pcAndAdvance(1);
-    n |= (pcAndAdvance(1) << 8);
+    let n = pcAndAdvance(2);
     
     reg8[A] = readMemory8(n);
 };
@@ -363,8 +381,7 @@ rootOps[0x32] = function(instruction, oldPc) {
     log("> ld (nn),a");
     time += 13;
     
-    let n = pcAndAdvance(1);
-    n |= (pcAndAdvance(1) << 8);
+    let n = pcAndAdvance(2);
     
     writeMemory8(n, reg8[A]);
 };
@@ -400,3 +417,126 @@ parentOps[0xed][0x4f] = function(instruction, oldPc) {
     // TODO: Flags
     reg8[R] = reg8[A];
 };
+
+// ----
+// 16-bit load group
+// ----
+
+fillMask(0x01, 0x30, rootOps, (instruction, oldPc) => {
+    time += 10;
+    
+    let dest = (instruction >> 4) & 0b11;
+    let n = pcAndAdvance(2);
+    
+    if(dest == 0b10 && indirect != 0b111) {
+        log("> ld I*,nn");
+        time += 4;
+        reg16[indirect] = n;
+    }else{
+        log("> ld dd,nn");
+        setRegPair(dest, n);
+    }
+});
+
+rootOps[0x2a] = function(instruction, oldPc) {
+    time += 16;
+    
+    let n = pcAndAdvance(2);
+    
+    if(indirect != 0b111) {
+        log("> ld I*,(nn)");
+        time += 4;
+        reg16[indirect] = readMemory16(n);
+    }else{
+        log("> ld HL,(nn)");
+        setRegPair(HL, readMemory16(n));
+    }
+};
+
+fillMask(0x4b, 0x30, parentOps[0xed], (instruction, oldPc) => {
+    time += 20;
+    
+    let dest = (instruction >> 4) & 0b11;
+    let n = pcAndAdvance(2);
+    
+    log("> ld dd,(nn)");
+    setRegPair(dest, readMemory16(n));
+});
+
+rootOps[0x22] = function(instruction, oldPc) {
+    time += 16;
+    
+    let n = pcAndAdvance(2);
+    
+    if(indirect != 0b111) {
+        log("> ld (nn),I*");
+        time += 4;
+        writeMemory16(n, reg16[indirect]);
+    }else{
+        log("> ld (nn),HL");
+        writeMemory16(n, getRegPair(HL));
+    }
+};
+
+fillMask(0x43, 0x30, parentOps[0xed], (instruction, oldPc) => {
+    time += 20;
+    
+    let src = (instruction >> 4) & 0b11;
+    let n = pcAndAdvance(2);
+    
+    log("> ld (nn),dd");
+    writeMemory16(n, getRegPair(src));
+});
+
+rootOps[0xf9] = function(instruction, oldPc) {
+    time += 6;
+    
+    let n = pcAndAdvance(2);
+    
+    if(indirect != 0b111) {
+        log("> ld (nn),I*");
+        time += 4;
+        reg16[SP] = reg16[indirect];
+    }else{
+        log("> ld (nn),HL");
+        reg16[SP] = getRegPair(HL);
+    }
+};
+
+fillMask(0xc5, 0x30, parentOps[0xed], (instruction, oldPc) => {
+    time += 11;
+    
+    let n = pcAndAdvance(2);
+    let q = (instruction >> 4) & 0b11;
+    let val = 0;
+    
+    if(q == 0b10 && indirect != 0b111) {
+        log("> push I*");
+        time += 4;
+        val = reg16[indirect];
+    }else{
+        log("> push qq");
+        val = getRegPair(q);
+    }
+    
+    reg16[SP] -= 2;
+    writeMemory16(reg16[SP], val);
+});
+
+fillMask(0xc1, 0x30, parentOps[0xed], (instruction, oldPc) => {
+    time += 10;
+    
+    let n = pcAndAdvance(2);
+    let q = (instruction >> 4) & 0b11;
+    let val = readMemory16(reg16[SP]);
+    reg16[SP] += 2;
+    
+    if(q == 0b10 && indirect != 0b111) {
+        log("> pop I*");
+        time += 4;
+        reg16[indirect] = val;
+    }else{
+        log("> pop qq");
+        setRegPair(q, val);
+    }
+});
