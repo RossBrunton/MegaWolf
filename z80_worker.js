@@ -78,6 +78,7 @@ let options = null;
 let ram = null;
 let time = 0;
 let worldTime = 0; // Time here is in Z80 clock cycles
+let crashed = false;
 
 let reg8 = new Uint8Array(R + 1);
 let reg16 = new Uint16Array(PC + 1);
@@ -93,7 +94,7 @@ let clock = function() {
 let doFrame = function(factor) {
     worldTime += ((clock() / FPS) * factor)|0;
     
-    if(stopped) {
+    if(stopped || crashed) {
         // Stopped, do nothing
         time = worldTime;
     }else{
@@ -106,7 +107,7 @@ let doFrame = function(factor) {
 
 let getMemory8 = function(i) {
     if(i < 0x4000) {
-        // Memory
+        // RAM
         i &= 0x1fff;
         return ram.getUint8(i);
     }
@@ -124,6 +125,28 @@ let getMemoryN = function(i, n) {
         return getMemory8(i);
     }else{
         return getMemory16(i);
+    }
+};
+
+let writeMemory8 = function(i, val) {
+    if(i < 0x4000) {
+        // RAM
+        i &= 0x1fff;
+        ram.setUint8(i, val);
+    }
+    
+    console.error("[Z80_w] Invalid memory write 0x"+i.toString(16));
+};
+
+let writeMemory16 = function(i, val) {
+    
+};
+
+let writeMemoryN = function(i, val, n) {
+    if(n == 1) {
+        writeMemory8(i, val);
+    }else{
+        writeMemory16(i, val);
     }
 };
 
@@ -174,6 +197,18 @@ let doInstruction = function() {
     let oldPc = reg16[PC];
     let first = pcAndAdvance(1);
     
+    // Clear indirect options
+    indirect = 0b111;
+    
+    // Set indirect
+    if(first == 0xdd) {
+        indirect = IX;
+        first = pcAndAdvance(1);
+    }else if(first == 0xfd) {
+        indirect = IY;
+        first = pcAndAdvance(1);
+    }
+    
     if(first in rootOps) {
         rootOps[first](first, oldPc);
     }else if(first in parentOps) {
@@ -182,9 +217,11 @@ let doInstruction = function() {
             parentOps[first][second](second, oldPc);
         }else{
             console.error("[z80] Illegal second word found 0x"+first.toString(16) + ":"+second.toString(16));
+            crashed = true;
         }
     }else{
         console.error("[z80] Illegal first word found 0x"+first.toString(16));
+        crashed = true;
     }
 };
 
@@ -207,17 +244,159 @@ let fillMask = function(val, mask, parent, fn) { // Fill all possible values of 
 // Parent lists: Each of these has several child opcodes which are the second word
 let parentOps = {};
 
+parentOps[0xed] = {};
+
 // And this is the list of opcodes which have no parents
 let rootOps = {};
 
 rootOps[0x00] = function(instruction, oldPc) {
     log("> nop");
     time += 4;
-}
+};
 
 rootOps[0xe9] = function(instruction, oldPc) {
     log("> jp (hl)");
     time += 4;
     
     reg16[PC] = getRegPair(HL);
+};
+
+// Indirects: Some instructions use HL, IX or IY depending on the first word of the instruction, this handles all three
+//  at once as part of the instruction decoding
+let indirect = 0b111; // IX, IY or 0b111 (to indicate none)
+let getIndirect = function() {
+    if(indirect == 0b111) {
+        return getRegPair(HL);
+    }else{
+        return reg16[indirect] + indirectDisplacement;
+    }
 }
+
+let getIndirectDisplacement = function() {
+    if(indirect == 0b111) {
+        return 0;
+    }else{
+        return pcAndAdvance(1);
+    }
+};
+
+// ----
+// 8-bit load group
+// ----
+
+fillMask(0x40, 0x3f, rootOps, (instruction, oldPc) => {
+    time += 4;
+    
+    let dest = (instruction >> 3) & 0b111;
+    let src = instruction & 0b111;
+    
+    if(src == 0b110) {
+        log("> ld r,(*)");
+        reg8[dest] = readMemory8(getIndirect() + getIndirectDisplacement());
+    }else if(dest = 0b110) {
+        log("> ld (*),r");
+        writeMemory8(getIndirect() + getIndirectDisplacement(), reg8[src]);
+    }else{
+        log("> ld r,r'");
+        reg8[dest] = reg8[src];
+    }
+});
+
+fillMask(0x06, 0x38, rootOps, (instruction, oldPc) => {
+    log("> ld r,n");
+    time += 7;
+    
+    let dest = (instruction >> 3) & 0b111;
+    let src = pcAndAdvance(1);
+    
+    reg8[dest] = src;
+});
+
+rootOps[0x36] = function(instruction, oldPc) {
+    log("> ld (*),n");
+    time += 10;
+    
+    let n = pcAndAdvance(1);
+    
+    writeMemory8(getIndirect() + getIndirectDisplacement(), n);
+};
+
+rootOps[0x0a] = function(instruction, oldPc) {
+    log("> ld a,(bc)");
+    time += 7;
+    
+    reg8[A] = readMemory8(getRegPair(BC));
+};
+
+rootOps[0x1a] = function(instruction, oldPc) {
+    log("> ld a,(de)");
+    time += 7;
+    
+    reg8[A] = readMemory8(getRegPair(DE));
+};
+
+rootOps[0x3a] = function(instruction, oldPc) {
+    log("> ld a,(nn)");
+    time += 13;
+    
+    let n = pcAndAdvance(1);
+    n |= (pcAndAdvance(1) << 8);
+    
+    reg8[A] = readMemory8(n);
+};
+
+rootOps[0x02] = function(instruction, oldPc) {
+    log("> ld (bc),a");
+    time += 7;
+    
+    writeMemory8(getRegPair(BC), reg8[A]);
+};
+
+rootOps[0x12] = function(instruction, oldPc) {
+    log("> ld (de),a");
+    time += 7;
+    
+    writeMemory8(getRegPair(DE), reg8[A]);
+};
+
+rootOps[0x32] = function(instruction, oldPc) {
+    log("> ld (nn),a");
+    time += 13;
+    
+    let n = pcAndAdvance(1);
+    n |= (pcAndAdvance(1) << 8);
+    
+    writeMemory8(n, reg8[A]);
+};
+
+parentOps[0xed][0x57] = function(instruction, oldPc) {
+    log("> ld a,i");
+    time += 9;
+    
+    // TODO: Flags
+    reg8[A] = reg8[I];
+};
+
+parentOps[0xed][0x5f] = function(instruction, oldPc) {
+    log("> ld a,r");
+    time += 9;
+    
+    // TODO: Flags
+    reg8[A] = reg8[R];
+};
+
+parentOps[0xed][0x47] = function(instruction, oldPc) {
+    log("> ld i,a");
+    time += 9;
+    
+    // TODO: Flags
+    reg8[I] = reg8[A];
+};
+
+parentOps[0xed][0x4f] = function(instruction, oldPc) {
+    log("> ld r,a");
+    time += 9;
+    
+    // TODO: Flags
+    reg8[R] = reg8[A];
+};
