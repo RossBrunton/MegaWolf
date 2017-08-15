@@ -29,6 +29,13 @@ const IY = 0b01;
 const SP = 0b10;
 const PC = 0b11;
 
+const FC = 0x01;
+const FN = 0x02;
+const FPV = 0x04;
+const FH = 0x10;
+const FZ = 0x40;
+const FS = 0x80;
+
 let BC = 0b00;
 let DE = 0b01;
 let HL = 0b10;
@@ -38,6 +45,64 @@ let log = function(msg) {
     if(DEBUG) {
         console.log("[Z80_w] "+msg);
     }
+}
+
+let isNegative = function(val, length) {
+    if(val < 0) return true;
+    
+    if(length == 1) {
+        return (val & 0x80) != 0;
+    }else if(length == 2) {
+        return (val & 0x8000) != 0;
+    }else if(length == 4) {
+        return (val & 0x80000000) != 0;
+    }else{
+        console.error("Unknown length for isNegative!");
+        return false;
+    }
+}
+
+let makeSigned = function(val, length) {
+    if(val < 0) return val;
+    
+    if(length == 1) {
+        return (val & 0x80) ? val - 0xff - 1 : val;
+    }else if(length == 2) {
+        return (val & 0x8000) ? val - 0xffff - 1 : val;
+    }else if(length == 4) {
+        return (val & 0x80000000) ? val - 0xffffffff - 1 : val;
+    }else{
+        console.error("Unknown length for makeSigned!");
+        return val;
+    }
+}
+
+let lengthMask = function(length) {
+    switch(length) {
+        case 1:
+            return 0xff;
+        case 2:
+            return 0xffff;
+        case 4:
+            return 0xffffffff;
+        default:
+            console.error("Unkown length value "+length+" for lengthMask");
+    }
+}
+
+let subCf = function(a, b, length, pv) { // a - b
+    let f = 0;
+    
+    let res = (a - b) & lengthMask(length);
+    if(res > a) f |= FC;
+    f |= FN;
+    // TODO: PV properly
+    f |= pv ? FPV : 0;
+    if((res & 0xf) > (a & 0xf)) f |= FH;
+    if(res == 0) f |= FZ;
+    if(isNegative(res, length)) f |= FS;
+    
+    return f;
 }
 
 self.onmessage = function(e) {
@@ -390,23 +455,32 @@ parentOps[0xed][0x57] = function(instruction, oldPc) {
     log("> ld a,i");
     time += 9;
     
-    // TODO: Flags
     reg8[A] = reg8[I];
+    
+    let f = reg8[F] & FC;
+    if(!reg8[I]) f |= FZ;
+    if(isNegative(reg8[I], 1)) f |= FS;
+    // TODO: PV flag
+    reg8[F] = f;
 };
 
 parentOps[0xed][0x5f] = function(instruction, oldPc) {
     log("> ld a,r");
     time += 9;
     
-    // TODO: Flags
     reg8[A] = reg8[R];
+    
+    let f = reg8[F] & FC;
+    if(!reg8[R]) f |= FZ;
+    if(isNegative(reg8[R], 1)) f |= FS;
+    // TODO: PV flag
+    reg8[F] = f;
 };
 
 parentOps[0xed][0x47] = function(instruction, oldPc) {
     log("> ld i,a");
     time += 9;
     
-    // TODO: Flags
     reg8[I] = reg8[A];
 };
 
@@ -414,7 +488,6 @@ parentOps[0xed][0x4f] = function(instruction, oldPc) {
     log("> ld r,a");
     time += 9;
     
-    // TODO: Flags
     reg8[R] = reg8[A];
 };
 
@@ -540,3 +613,149 @@ fillMask(0xc1, 0x30, parentOps[0xed], (instruction, oldPc) => {
         setRegPair(q, val);
     }
 });
+
+
+// ----
+// Exchange, Block Transfer, and Search Group
+// ----
+rootOps[0xeb] = function(instruction, oldPc) {
+    log("> ex de,hl");
+    time += 4;
+    
+    let tmp = getRegPair(DE);
+    setRegPair(DE, getRegPair(HL));
+    setRegPair(HL, tmp);
+};
+
+rootOps[0x08] = function(instruction, oldPc) {
+    log("> ex af,af'");
+    time += 4;
+    
+    for(let r of [A, F]) {
+        let tmp = reg8[r];
+        reg8[r] = reg8[r + PBASE];
+        reg8[r + PBASE] = tmp;
+    }
+};
+
+rootOps[0xd9] = function(instruction, oldPc) {
+    log("> exx");
+    time += 4;
+    
+    for(let r of [B, C, D, E, H, L]) {
+        let tmp = reg8[r];
+        reg8[r] = reg8[r + PBASE];
+        reg8[r + PBASE] = tmp;
+    }
+};
+
+rootOps[0xe3] = function(instruction, oldPc) {
+    time += 19;
+    
+    if(immediate != 0b111) {
+        log("> ex (sp),I*");
+        time += 4;
+        let tmp = reg16[indirect];
+        reg16[indirect] = readMemory16(reg16[SP]);
+        writeMemory16(reg16[SP], tmp);
+    }else{
+        log("> ex (sp),hl");
+        let tmp = getRegPair(HL);
+        setRegPair(HL, readMemory16(reg16[SP]));
+        writeMemory16(reg16[SP], tmp);
+    }
+};
+
+parentOps[0xed][0xa0] = function(instruction, oldPc) {
+    time += 16;
+    
+    log("> ldi");
+    writeMemory8(getRegPair(DE), readMemory8(getRegPair(HL)));
+    setRegPair(DE, getRegPair(DE) + 1);
+    setRegPair(HL, getRegPair(HL) + 1);
+    setRegPair(BC, getRegPair(BC) - 1);
+    
+    let f = reg8[F] & (FC | FS | FZ);
+    if(getRegPair(BC)) f |= FPV;
+    reg8[F] = f;
+};
+
+parentOps[0xed][0xb0] = function(instruction, oldPc) {
+    log("> ldir");
+    parentOps[0xed][0xa0](instruction, oldPc); // Call the ldi instruction
+    
+    // Check its flags
+    if(reg8[F] & FPV) {
+        time += 5;
+        reg16[PC] -= 2;
+    }
+};
+
+parentOps[0xed][0xa8] = function(instruction, oldPc) {
+    time += 16;
+    
+    log("> ldd");
+    writeMemory8(getRegPair(DE), readMemory8(getRegPair(HL)));
+    setRegPair(DE, getRegPair(DE) - 1);
+    setRegPair(HL, getRegPair(HL) - 1);
+    setRegPair(BC, getRegPair(BC) - 1);
+    
+    let f = reg8[F] & (FC | FS | FZ);
+    if(getRegPair(BC)) f |= FPV;
+    reg8[F] = f;
+};
+
+parentOps[0xed][0xb8] = function(instruction, oldPc) {
+    log("> lddr");
+    parentOps[0xed][0xa8](instruction, oldPc); // Call the ldd instruction
+    
+    // Check its flags
+    if(reg8[F] & FPV) {
+        time += 5;
+        reg16[PC] -= 2;
+    }
+};
+
+parentOps[0xed][0xa1] = function(instruction, oldPc) {
+    time += 16;
+    
+    log("> cpi");
+    let val = readMemory8(getRegPair(HL));
+    setRegPair(HL, getRegPair(HL) + 1);
+    setRegPair(BC, getRegPair(BC) - 1);
+    
+    reg8[F] = subCf(reg8[A], val, 1, (getRegPair(BC) > 0));
+};
+
+parentOps[0xed][0xb1] = function(instruction, oldPc) {
+    log("> cpir");
+    parentOps[0xed][0xa1](instruction, oldPc); // Call the cpi instruction
+    
+    // Check its flags
+    if((reg8[F] & FPV) || (reg8[Z] & FZ)) {
+        time += 5;
+        reg16[PC] -= 2;
+    }
+};
+
+parentOps[0xed][0xa9] = function(instruction, oldPc) {
+    time += 16;
+    
+    log("> cpd");
+    let val = readMemory8(getRegPair(HL));
+    setRegPair(HL, getRegPair(HL) - 1);
+    setRegPair(BC, getRegPair(BC) - 1);
+    
+    reg8[F] = subCf(reg8[A], val, 1, (getRegPair(BC) > 0));
+};
+
+parentOps[0xed][0xb9] = function(instruction, oldPc) {
+    log("> cpdr");
+    parentOps[0xed][0xa9](instruction, oldPc); // Call the cpi instruction
+    
+    // Check its flags
+    if((reg8[F] & FPV) || (reg8[Z] & FZ)) {
+        time += 5;
+        reg16[PC] -= 2;
+    }
+};
