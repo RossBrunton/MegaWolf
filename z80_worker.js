@@ -105,6 +105,48 @@ let subCf = function(a, b, length, pv) { // a - b
     return f;
 }
 
+let addCf = function(a, b, length, withCarry) {
+    let f = 0;
+    
+    let carry = (withCarry && (reg8[F] & FC)) ? 1 : 0;
+    
+    let res = (a + b + carry) & lengthMask(length);
+    let resNc = (a + b) & lengthMask(length);
+    
+    // Carry
+    if(carry) {
+        if(res <= a) f |= FC;
+        if((res & 0xf) <= (a & 0xf)) f |= FH;
+    }else{
+        if(res < a) f |= FC;
+        if((res & 0xf) < (a & 0xf)) f |= FH;
+    }
+    
+    // Overflow
+    let highBitMask = 1 << ((length * 8) - 1)
+    if((a & b & highBitMask) || (~a & ~b & highBitMask)) {
+        if((a & highBitMask) != (resNc & highBitMask)) {
+            // Handle the carry bit
+            if(carry && res == 0) {
+                // We are -1, the carry bit will stop an overflow
+            }else{
+                f |= FPV;
+            }
+        }
+    }else if(carry) {
+        // Carry, see if that will cause an overflow
+        if(resNc == (lengthMask(length) >> 1)) {
+            // If it's one less than the amount that would cause an OF
+            f |= FPV;
+        }
+    }
+    
+    if(res == 0) f |= FZ;
+    if(isNegative(res, length)) f |= FS;
+    
+    return f;
+}
+
 self.onmessage = function(e) {
     let data = e.data[1];
     
@@ -759,3 +801,241 @@ parentOps[0xed][0xb9] = function(instruction, oldPc) {
         reg16[PC] -= 2;
     }
 };
+
+// ----
+// 8-Bit Arithmetic Group
+// ----
+
+let getArg = function(instruction, opName) {
+    let src = instruction & 0b111;
+    
+    if(src == 0b110) {
+        log("> "+opName+" a,(*)");
+        time += 3;
+        if(indirect != 0b111) time += 12;
+        return readMemory8(getIndirect() + getIndirectDisplacement());
+    }else{
+        log("> "+opName+" a,r");
+        return reg8[src];
+    }
+}
+
+fillMask(0x80, 0x07, rootOps, (instruction, oldPc) => {
+    time += 4;
+    
+    let val = getArg(instruction, "add");
+    
+    reg8[F] = addCf(val, reg8[A], 1, false);
+    reg8[A] += val;
+});
+
+rootOps[0xc6] = function(instruction, oldPc) {
+    log("> add a,n");
+    time += 7;
+    
+    let val = pcAndAdvance(1);
+    
+    reg8[F] = addCf(val, reg8[A], 1, false);
+    reg8[A] += val;
+};
+
+fillMask(0x88, 0x07, rootOps, (instruction, oldPc) => {
+    time += 4;
+    
+    let val = getArg(instruction, "adc");
+    
+    reg8[F] = addCf(val, reg8[A], 1, false);
+    reg8[A] += val;
+    if(reg8[F] & FC) reg8[A] ++;
+});
+
+rootOps[0xce] = function(instruction, oldPc) {
+    log("> adc a,n");
+    time += 7;
+    
+    let val = pcAndAdvance(1);
+    
+    reg8[F] = addCf(val, reg8[A], 1, true);
+    reg8[A] += val;
+    if(reg8[F] & FC) reg8[A] ++;
+};
+
+fillMask(0x90, 0x07, rootOps, (instruction, oldPc) => {
+    time += 4;
+    
+    let val = getArg(instruction, "sub");
+    
+    reg8[F] = subCf(reg8[A], val, 1, 0, true);
+    reg8[A] -= val;
+});
+
+rootOps[0xd6] = function(instruction, oldPc) {
+    log("> sub a,n");
+    time += 7;
+    
+    let val = pcAndAdvance(1);
+    
+    reg8[F] = subCf(reg8[A], val, 1, 0, false);
+    reg8[A] -= val;
+};
+
+fillMask(0x98, 0x07, rootOps, (instruction, oldPc) => {
+    time += 4;
+    
+    let val = getArg(instruction, "sbc");
+    
+    reg8[F] = subCf(reg8[A], val, 1, 0, true);
+    reg8[A] -= val;
+    if(reg8[F] & FC) reg8[A] --;
+});
+
+rootOps[0xde] = function(instruction, oldPc) {
+    log("> sbc a,n");
+    time += 7;
+    
+    let val = pcAndAdvance(1);
+    
+    reg8[F] = subCf(reg8[A], val, 1, 0, true);
+    reg8[A] -= val;
+    if(reg8[F] & FC) reg8[A] --;
+};
+
+fillMask(0xa0, 0x07, rootOps, (instruction, oldPc) => {
+    time += 4;
+    
+    let val = getArg(instruction, "and");
+    reg8[A] &= val;
+    
+    let f = FH;
+    if(isNegative(reg8[A], 1)) f |= FN;
+    if(!reg8[A]) f |= FZ;
+    // TODO: PV flag
+    reg8[F] = f;
+});
+
+rootOps[0xe6] = function(instruction, oldPc) {
+    log("> and a,n");
+    time += 7;
+    
+    let val = pcAndAdvance(1);
+    reg8[A] &= val;
+    
+    let f = FH;
+    if(isNegative(reg8[A], 1)) f |= FN;
+    if(!reg8[A]) f |= FZ;
+    // TODO: PV flag
+    reg8[F] = f;
+};
+
+fillMask(0xb0, 0x07, rootOps, (instruction, oldPc) => {
+    time += 4;
+    
+    let val = getArg(instruction, "or");
+    reg8[A] |= val;
+    
+    let f = FH;
+    if(isNegative(reg8[A], 1)) f |= FN;
+    if(!reg8[A]) f |= FZ;
+    // TODO: PV flag
+    reg8[F] = f;
+});
+
+rootOps[0xf6] = function(instruction, oldPc) {
+    log("> or a,n");
+    time += 7;
+    
+    let val = pcAndAdvance(1);
+    reg8[A] |= val;
+    
+    let f = 0;
+    if(isNegative(reg8[A], 1)) f |= FN;
+    if(!reg8[A]) f |= FZ;
+    // TODO: PV flag
+    reg8[F] = f;
+};
+
+fillMask(0xaf, 0x07, rootOps, (instruction, oldPc) => {
+    time += 4;
+    
+    let val = getArg(instruction, "xor");
+    reg8[A] ^= val;
+    
+    let f = FH;
+    if(isNegative(reg8[A], 1)) f |= FN;
+    if(!reg8[A]) f |= FZ;
+    // TODO: PV flag
+    reg8[F] = f;
+});
+
+rootOps[0xee] = function(instruction, oldPc) {
+    log("> xor a,n");
+    time += 7;
+    
+    let val = pcAndAdvance(1);
+    reg8[A] ^= val;
+    
+    let f = 0;
+    if(isNegative(reg8[A], 1)) f |= FN;
+    if(!reg8[A]) f |= FZ;
+    // TODO: PV flag
+    reg8[F] = f;
+};
+
+fillMask(0xbf, 0x07, rootOps, (instruction, oldPc) => {
+    time += 4;
+    
+    let val = getArg(instruction, "cp");
+    
+    reg8[F] = subCf(reg8[A], val, 1, 0, true);
+});
+
+rootOps[0xfe] = function(instruction, oldPc) {
+    log("> cp a,n");
+    time += 7;
+    
+    let val = pcAndAdvance(1);
+    
+    reg8[F] = subCf(reg8[A], val, 1, 0, false);
+};
+
+fillMask(0x04, 0x38, rootOps, (instruction, oldPc) => {
+    time += 4;
+    
+    let src = (instruction >> 3) & 0b111;
+    let val = 0;
+    
+    if(src == 0b110) {
+        log("> inc (*)");
+        time += 7;
+        if(indirect != 0b111) time += 12;
+        val = readMemory8(getIndirect() + getIndirectDisplacement());
+        writeMemory8(getIndirect() + getIndirectDisplacement(), val + 1);
+    }else{
+        log("> inc r");
+        val = reg8[src];
+        reg8[src] ++;
+    }
+    
+    reg8[F] = addCf(val, 1, 1, false);
+});
+
+fillMask(0x05, 0x38, rootOps, (instruction, oldPc) => {
+    time += 4;
+    
+    let src = (instruction >> 3) & 0b111;
+    let val = 0;
+    
+    if(src == 0b110) {
+        log("> dec (*)");
+        time += 7;
+        if(indirect != 0b111) time += 12;
+        val = readMemory8(getIndirect() + getIndirectDisplacement());
+        writeMemory8(getIndirect() + getIndirectDisplacement(), val - 1);
+    }else{
+        log("> dec r");
+        val = reg8[src];
+        reg8[src] --;
+    }
+    
+    reg8[F] = subCf(val, 1, 1, 0, false);
+});
