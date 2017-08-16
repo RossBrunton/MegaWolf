@@ -40,6 +40,10 @@ let BC = 0b00;
 let DE = 0b01;
 let HL = 0b10;
 
+let IM0 = 0b00;
+let IM1 = 0b10;
+let IM2 = 0b11;
+
 const DEBUG = false;
 let log = function(msg) {
     if(DEBUG) {
@@ -90,7 +94,8 @@ let lengthMask = function(length) {
     }
 }
 
-let subCf = function(a, b, length, pv) { // a - b
+// pv: 0 or 1 is literal, 2 is "calculate it"
+let subCf = function(a, b, length, pv, withCarry) { // a - b
     let f = 0;
     
     let res = (a - b) & lengthMask(length);
@@ -170,7 +175,7 @@ self.onmessage = function(e) {
             break;
         
         case MSG_RESET:
-            reg16[PC] = 0x0000;
+            reset(0x0000);
             break;
         
         default:
@@ -186,6 +191,10 @@ let ram = null;
 let time = 0;
 let worldTime = 0; // Time here is in Z80 clock cycles
 let crashed = false;
+let halted = false;
+let iff1 = 0; // Interupt flip flops
+let iff2 = 0;
+let intMode = IM0; // Interrupt mode
 
 let reg8 = new Uint8Array(R + 1);
 let reg16 = new Uint16Array(PC + 1);
@@ -201,7 +210,7 @@ let clock = function() {
 let doFrame = function(factor) {
     worldTime += ((clock() / FPS) * factor)|0;
     
-    if(stopped || crashed) {
+    if(stopped || crashed || halted) {
         // Stopped, do nothing
         time = worldTime;
     }else{
@@ -318,6 +327,14 @@ let pcAndAdvance = function(length) {
     return toRet;
 };
 
+let reset = function(entry) {
+    halted = false;
+    crashed = false;
+    iff1 = 0;
+    iff2 = 0;
+    reg16[PC] = entry;
+}
+
 let doInstruction = function() {
     // Get the first word of the opcode
     let oldPc = reg16[PC];
@@ -374,11 +391,6 @@ parentOps[0xed] = {};
 
 // And this is the list of opcodes which have no parents
 let rootOps = {};
-
-rootOps[0x00] = function(instruction, oldPc) {
-    log("> nop");
-    time += 4;
-};
 
 rootOps[0xe9] = function(instruction, oldPc) {
     log("> jp (hl)");
@@ -766,7 +778,7 @@ parentOps[0xed][0xa1] = function(instruction, oldPc) {
     setRegPair(HL, getRegPair(HL) + 1);
     setRegPair(BC, getRegPair(BC) - 1);
     
-    reg8[F] = subCf(reg8[A], val, 1, (getRegPair(BC) > 0));
+    reg8[F] = subCf(reg8[A], val, 1, (getRegPair(BC) > 0) ? 1 : 0, false);
 };
 
 parentOps[0xed][0xb1] = function(instruction, oldPc) {
@@ -788,7 +800,7 @@ parentOps[0xed][0xa9] = function(instruction, oldPc) {
     setRegPair(HL, getRegPair(HL) - 1);
     setRegPair(BC, getRegPair(BC) - 1);
     
-    reg8[F] = subCf(reg8[A], val, 1, (getRegPair(BC) > 0));
+    reg8[F] = subCf(reg8[A], val, 1, (getRegPair(BC) > 0) ? 1 : 0, false);
 };
 
 parentOps[0xed][0xb9] = function(instruction, oldPc) {
@@ -865,7 +877,7 @@ fillMask(0x90, 0x07, rootOps, (instruction, oldPc) => {
     
     let val = getArg(instruction, "sub");
     
-    reg8[F] = subCf(reg8[A], val, 1, 0, true);
+    reg8[F] = subCf(reg8[A], val, 1, 2, false);
     reg8[A] -= val;
 });
 
@@ -875,7 +887,7 @@ rootOps[0xd6] = function(instruction, oldPc) {
     
     let val = pcAndAdvance(1);
     
-    reg8[F] = subCf(reg8[A], val, 1, 0, false);
+    reg8[F] = subCf(reg8[A], val, 1, 2, false);
     reg8[A] -= val;
 };
 
@@ -884,7 +896,7 @@ fillMask(0x98, 0x07, rootOps, (instruction, oldPc) => {
     
     let val = getArg(instruction, "sbc");
     
-    reg8[F] = subCf(reg8[A], val, 1, 0, true);
+    reg8[F] = subCf(reg8[A], val, 1, 2, true);
     reg8[A] -= val;
     if(reg8[F] & FC) reg8[A] --;
 });
@@ -895,7 +907,7 @@ rootOps[0xde] = function(instruction, oldPc) {
     
     let val = pcAndAdvance(1);
     
-    reg8[F] = subCf(reg8[A], val, 1, 0, true);
+    reg8[F] = subCf(reg8[A], val, 1, 2, true);
     reg8[A] -= val;
     if(reg8[F] & FC) reg8[A] --;
 };
@@ -986,7 +998,7 @@ fillMask(0xbf, 0x07, rootOps, (instruction, oldPc) => {
     
     let val = getArg(instruction, "cp");
     
-    reg8[F] = subCf(reg8[A], val, 1, 0, true);
+    reg8[F] = subCf(reg8[A], val, 1, 2, false);
 });
 
 rootOps[0xfe] = function(instruction, oldPc) {
@@ -995,7 +1007,7 @@ rootOps[0xfe] = function(instruction, oldPc) {
     
     let val = pcAndAdvance(1);
     
-    reg8[F] = subCf(reg8[A], val, 1, 0, false);
+    reg8[F] = subCf(reg8[A], val, 1, 2, false);
 };
 
 fillMask(0x04, 0x38, rootOps, (instruction, oldPc) => {
@@ -1037,5 +1049,89 @@ fillMask(0x05, 0x38, rootOps, (instruction, oldPc) => {
         reg8[src] --;
     }
     
-    reg8[F] = subCf(val, 1, 1, 0, false);
+    reg8[F] = subCf(val, 1, 1, 2, false);
+});
+
+
+// ----
+// General-Purpose Arithmetic and CPU Control Groups
+// ----
+
+rootOps[0x27] = function(instruction, oldPc) {
+    log("> daa");
+    console.error("[Z80] daa operator not implemented yet.");
+    crashed = true;
+};
+
+rootOps[0x2f] = function(instruction, oldPc) {
+    log("> cpl");
+    time += 4;
+    
+    reg8[A] = ~reg8[A];
+    reg8[F] |= FH | FN;
+};
+
+parentOps[0xed][0x44] = function(instruction, oldPc) {
+    log("> neg");
+    time += 8;
+    
+    reg8[A] = -reg8[A];
+    reg8[F] = subCf(0, -reg8[A], 1, 2, false);
+};
+
+rootOps[0x3f] = function(instruction, oldPc) {
+    log("> ccf");
+    time += 4;
+    
+    let oldC = (reg8[F] & FC) != 0;
+    reg8[F] &= ~(FC | FH | FN);
+    if(oldC) {
+        reg8[F] |= FH;
+    }else{
+        reg8[F] |= FC;
+    }
+};
+
+rootOps[0x37] = function(instruction, oldPc) {
+    log("> scf");
+    time += 4;
+    
+    reg8[F] &= ~(FH | FN);
+    reg8[F] |= FC;
+};
+
+rootOps[0x00] = function(instruction, oldPc) {
+    log("> nop");
+    time += 4;
+};
+
+rootOps[0x76] = function(instruction, oldPc) {
+    log("> halt");
+    time += 4;
+    
+    halted = true;
+};
+
+rootOps[0xf3] = function(instruction, oldPc) {
+    log("> di");
+    time += 4;
+    
+    iff1 = 0;
+    iff2 = 0;
+};
+
+
+rootOps[0xfb] = function(instruction, oldPc) {
+    log("> ei");
+    time += 4;
+    
+    iff1 = 1;
+    iff2 = 1;
+};
+
+fillMask(0x48, 0x18, parentOps[0xed], (instruction, oldPc) => {
+    log("> im *");
+    time += 8;
+    
+    intMode = (instruction >> 3) & 0b11;
 });
