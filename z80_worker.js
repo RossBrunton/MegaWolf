@@ -81,6 +81,11 @@ let makeSigned = function(val, length) {
     }
 }
 
+let parity = function(val, length) {
+    //TODO: Calculate parity
+    return 0;
+}
+
 let lengthMask = function(length) {
     switch(length) {
         case 1:
@@ -388,6 +393,7 @@ let fillMask = function(val, mask, parent, fn) { // Fill all possible values of 
 let parentOps = {};
 
 parentOps[0xed] = {};
+parentOps[0xcb] = {};
 
 // And this is the list of opcodes which have no parents
 let rootOps = {};
@@ -1257,3 +1263,216 @@ fillMask(0x0b, 0x30, rootOps, (instruction, oldPc) => {
         setRegPair(reg, val);
     }
 });
+
+
+// ----
+// Rotate and Shift Group
+// ----
+
+let shiftGet = function(instruction) {
+    let reg = instruction & 0b111;
+    
+    if(reg == 0b110) {
+        // Memory
+        time += 7;
+        if(indirect != 0b111) time += 8;
+        return readMemory8(getIndirect() + getIndirectDisplacement());
+    }else{
+        // Register
+        return reg8[reg];
+    }
+}
+
+let shiftSet = function(instruction, value, c) {
+    let reg = instruction & 0b111;
+    
+    if(reg == 0b110) {
+        // Memory
+        writeMemory8(getIndirect() + getIndirectDisplacement(), value);
+    }else{
+        // Register
+        reg8[reg] = value;
+    }
+    
+    // Set flags
+    reg8[F] = 0;
+    if(c) reg8[F] |= FC;
+    if(!value) reg8[F] |= FZ;
+    if(isNegative(value, 1)) reg8[F] |= FS;
+    if(parity(value, 1)) reg8[F] |= FPV;
+}
+
+rootOps[0x07] = function(instruction, oldPc) {
+    log("> rlca");
+    time += 4;
+    
+    let c = reg8[A] >>> 7;
+    
+    reg8[A] <<= 1;
+    reg8[A] |= c;
+    
+    reg8[F] &= ~(FC | FN | FH);
+    if(c) reg8[F] |= FC;
+};
+
+rootOps[0x17] = function(instruction, oldPc) {
+    log("> rla");
+    time += 4;
+    
+    let oldC = (reg8[F] & CF) ? 1 : 0;
+    let c = reg8[A] >>> 7;
+    
+    reg8[A] <<= 1;
+    reg8[A] |= oldC;
+    
+    reg8[F] &= ~(FC | FN | FH);
+    if(c) reg8[F] |= FC;
+};
+
+rootOps[0x07] = function(instruction, oldPc) {
+    log("> rrca");
+    time += 4;
+    
+    let c = reg8[A] & 0b1;
+    
+    reg8[A] >>>= 1;
+    reg8[A] |= c << 7;
+    
+    reg8[F] &= ~(FC | FN | FH);
+    if(c) reg8[F] |= FC;
+};
+
+rootOps[0x17] = function(instruction, oldPc) {
+    log("> rra");
+    time += 4;
+    
+    let oldC = (reg8[F] & CF) ? 1 : 0;
+    let c = reg8[A] & 0b1;
+    
+    reg8[A] >>>= 1;
+    reg8[A] |= oldC << 7;
+    
+    reg8[F] &= ~(FC | FN | FH);
+    if(c) reg8[F] |= FC;
+};
+
+fillMask(0x00, 0x7, parentOps[0xcb], (instruction, oldPc) => {
+    log("> rlc m");
+    time += 8;
+    
+    let src = shiftGet(instruction);
+    let c = src >>> 7;
+    
+    src <<= 1;
+    src |= c;
+    
+    shiftSet(instruction, src, c);
+});
+
+fillMask(0x10, 0x7, parentOps[0xcb], (instruction, oldPc) => {
+    log("> rl m");
+    time += 8;
+    let oldC = (reg8[F] & CF) ? 1 : 0;
+    
+    let src = shiftGet(instruction);
+    let c = src >>> 7;
+    
+    src <<= 1;
+    src |= oldC;
+    
+    shiftSet(instruction, src, c);
+});
+
+fillMask(0x08, 0x7, parentOps[0xcb], (instruction, oldPc) => {
+    log("> rrc m");
+    time += 8;
+    
+    let src = shiftGet(instruction);
+    let c = src & 0b1;
+    
+    src >>>= 1;
+    src |= c << 7;
+    
+    shiftSet(instruction, src, c);
+});
+
+fillMask(0x18, 0x7, parentOps[0xcb], (instruction, oldPc) => {
+    log("> rr m");
+    time += 8;
+    let oldC = (reg8[F] & CF) ? 1 : 0;
+    
+    let src = shiftGet(instruction);
+    let c = src & 0b1;
+    
+    src >>>= 1;
+    src |= oldC << 7;
+    
+    shiftSet(instruction, src, c);
+});
+
+fillMask(0x20, 0x7, parentOps[0xcb], (instruction, oldPc) => {
+    log("> sla m");
+    time += 8;
+    let src;
+    
+    let src = shiftGet(instruction);
+    let c = src >>> 7;
+    
+    src <<= 1;
+    
+    shiftSet(instruction, src, c);
+});
+
+fillMask(0x21, 0x7, parentOps[0xcb], (instruction, oldPc) => {
+    log("> sra m");
+    time += 8;
+    
+    let src = shiftGet(instruction);
+    let c = src & 0b1;
+    
+    src |= (src << 1) & 0x100;
+    src >>>= 1;
+    
+    shiftSet(instruction, src, c);
+});
+
+parentOps[0xed][0x6f] = function(instruction, oldPc) {
+    log("> rld");
+    time += 18;
+    
+    let val = readMemory8(getRegPair(HL));
+    val |= reg8[A] << 8;
+    
+    val <<= 4;
+    val |= (val >>> 8) & 0xf;
+    
+    writeMemory8(getRegPair(HL), val & 0xff);
+    reg8[A] &= ~0x0f;
+    reg8[A] |= (val >>> 8) & 0xf;
+    
+    reg8[F] &= FC;
+    if(isNegative(reg8[A], 1)) reg8[F] |= FS;
+    if(!reg8[A]) reg8[F] |= FZ;
+    if(parity(reg8[A], 1)) reg8[F] |= FS;
+};
+
+parentOps[0xed][0x6f] = function(instruction, oldPc) {
+    log("> rrd");
+    time += 18;
+    
+    let val = readMemory8(getRegPair(HL));
+    val |= reg8[A] << 8;
+    
+    val &= 0x0fff;
+    val |= (val & 0xf) << 8;
+    val >>>= 4;
+    
+    writeMemory8(getRegPair(HL), val & 0xff);
+    reg8[A] &= ~0x0f;
+    reg8[A] |= (val >>> 8) & 0xf;
+    
+    reg8[F] &= FC;
+    if(isNegative(reg8[A], 1)) reg8[F] |= FS;
+    if(!reg8[A]) reg8[F] |= FZ;
+    if(parity(reg8[A], 1)) reg8[F] |= FS;
+};
