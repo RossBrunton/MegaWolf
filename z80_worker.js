@@ -293,7 +293,7 @@ let getRegPair = function(pair) {
 };
 
 let setRegPair = function(pair, val) {
-    let hi = val >>> 8;
+    let hi = (val >>> 8) & 0xff;
     let lo = val & 0xff;
     
     switch(pair) {
@@ -407,6 +407,14 @@ let getIndirect = function() {
         return getRegPair(HL);
     }else{
         return reg16[indirect];
+    }
+}
+
+let setIndirect = function(v) {
+    if(indirect == 0b111) {
+        setRegPair(HL, v);
+    }else{
+        reg16[indirect] = v;
     }
 }
 
@@ -1134,4 +1142,118 @@ fillMask(0x48, 0x18, parentOps[0xed], (instruction, oldPc) => {
     time += 8;
     
     intMode = (instruction >> 3) & 0b11;
+});
+
+// ----
+// 16-Bit Arithmetic Group
+// ----
+
+fillMask(0x09, 0x30, rootOps, (instruction, oldPc) => {
+    log("> add hl,ss");
+    time += 11;
+    let base;
+    let src;
+    let reg = (instruction >> 4) & 0b11;
+    
+    if(reg == 0b10 && indirect != 0b111) {
+        // IX/IY
+        time += 4;
+        src = getIndirect();
+    }else{
+        // Any other pair
+        src = getRegPair(reg);
+    }
+    
+    let val = getIndirect() + src;
+    reg8[F] = addCf(getIndirect(), src, 2, false);
+    
+    if(reg == 0b10 && indirect != 0b111) {
+        // IX/IY
+        setIndirect(val);
+    }else{
+        // Any other pair
+        setRegPair(HL, val);
+    }
+});
+
+fillMask(0x4a, 0x30, parentOps[0xed], (instruction, oldPc) => {
+    log("> adc hl,ss");
+    time += 15;
+    let reg = (instruction >> 4) & 0b11;
+    
+    let src = getRegPair(reg);
+    
+    let val = getRegPair(HL) + src + ((reg8[F] & FC) ? 1 : 0);
+    reg8[F] = addCf(getRegPair(HL), src, 2, true);
+    
+    setRegPair(HL, val);
+});
+
+fillMask(0x42, 0x30, parentOps[0xed], (instruction, oldPc) => {
+    log("> subc hl,ss");
+    time += 15;
+    let reg = (instruction >> 4) & 0b11;
+    
+    let src = getRegPair(reg);
+    
+    let val = getRegPair(HL) - src - ((reg8[F] & FC) ? 1 : 0);
+    reg8[F] = subCf(getRegPair(HL), src, 2, 2, true);
+    
+    setRegPair(HL, val);
+});
+
+fillMask(0x03, 0x30, rootOps, (instruction, oldPc) => {
+    log("> inc ss");
+    time += 6;
+    let base;
+    let src;
+    let reg = (instruction >> 4) & 0b11;
+    
+    if(reg == 0b10 && indirect != 0b111) {
+        // IX/IY
+        time += 4;
+        src = getIndirect();
+    }else{
+        // Any other pair
+        src = getRegPair(reg);
+    }
+    
+    let val = src + 1;
+    reg8[F] = addCf(src, 1, 2, false);
+    
+    if(reg == 0b10 && indirect != 0b111) {
+        // IX/IY
+        setIndirect(val);
+    }else{
+        // Any other pair
+        setRegPair(reg, val);
+    }
+});
+
+fillMask(0x0b, 0x30, rootOps, (instruction, oldPc) => {
+    log("> dec ss");
+    time += 6;
+    let base;
+    let src;
+    let reg = (instruction >> 4) & 0b11;
+    
+    if(reg == 0b10 && indirect != 0b111) {
+        // IX/IY
+        time += 4;
+        src = getIndirect();
+    }else{
+        // Any other pair
+        src = getRegPair(reg);
+    }
+    
+    let val = src - 1;
+    reg8[F] = subCf(src, 1, 2, 2, false);
+    
+    if(reg == 0b10 && indirect != 0b111) {
+        // IX/IY
+        setIndirect(val);
+    }else{
+        // Any other pair
+        setRegPair(reg, val);
+    }
 });
