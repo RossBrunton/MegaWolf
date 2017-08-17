@@ -1476,3 +1476,72 @@ parentOps[0xed][0x6f] = function(instruction, oldPc) {
     if(!reg8[A]) reg8[F] |= FZ;
     if(parity(reg8[A], 1)) reg8[F] |= FS;
 };
+
+
+// ----
+// Bit Set, Test and Reset
+// ----
+let bitGet = function(instruction) {
+    let reg = instruction & 0b111;
+    
+    if(reg == 0b110) {
+        // Memory
+        time += 7;
+        if(indirect != 0b111) time += 8;
+        return readMemory8(getIndirect() + getIndirectDisplacement());
+    }else{
+        // Register
+        return reg8[reg];
+    }
+};
+
+let bitSet = function(instruction, value) {
+    let reg = instruction & 0b111;
+    
+    if(reg == 0b110) {
+        // Memory
+        writeMemory8(getIndirect() + getIndirectDisplacement(), value);
+    }else{
+        // Register
+        reg8[reg] = value;
+    }
+};
+
+fillMask(0x40, 0x1f, parentOps[0xcb], (instruction, oldPc) => {
+    log("> bit b,m");
+    time += 8;
+    
+    let src = bitGet(instruction);
+    let b = (instruction >>> 3) & 0b111;
+    let mask = 1 << b;
+    
+    reg8[F] &= FC;
+    if(!(src & mask)) reg8[F] |= FZ;
+    reg8[F] |= FH;
+});
+
+fillMask(0xc0, 0x1f, parentOps[0xcb], (instruction, oldPc) => {
+    log("> set b,m");
+    time += 8;
+    
+    let src = bitGet(instruction);
+    let b = (instruction >>> 3) & 0b111;
+    let mask = 1 << b;
+    
+    src |= mask;
+    
+    bitSet(instruction, src);
+});
+
+fillMask(0x80, 0x1f, parentOps[0xcb], (instruction, oldPc) => {
+    log("> res b,m");
+    time += 8;
+    
+    let src = bitGet(instruction);
+    let b = (instruction >>> 3) & 0b111;
+    let mask = 1 << b;
+    
+    src &= ~mask;
+    
+    bitSet(instruction, src & 0xff);
+});
