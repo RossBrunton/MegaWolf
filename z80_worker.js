@@ -1625,3 +1625,82 @@ rootOps[0x10] = function(instruction, oldPc) {
         reg16[PC] += makeSigned(displacement, 1) + 2;
     }
 };
+
+
+// ----
+// Call and Return Group
+// ----
+rootOps[0xcd] = function(instruction, oldPc) {
+    log("> call nn");
+    time += 17;
+    
+    let dest = pcAndAdvance(2);
+    
+    reg16[SP] -= 2;
+    writeMemory16(reg16[SP], reg16[PC]);
+    
+    reg16[PC] = dest;
+};
+
+fillMask(0xc4, 0x38, rootOps, (instruction, oldPc) => {
+    log("> call cc,nn");
+    time += 10;
+    
+    let dest = pcAndAdvance(2);
+    
+    if(doCondition(instruction)) {
+        time += 7;
+        
+        reg16[SP] -= 2;
+        writeMemory16(reg16[SP], reg16[PC]);
+        
+        reg16[PC] = dest;
+    }
+});
+
+rootOps[0xc9] = function(instruction, oldPc) {
+    log("> ret");
+    time += 10;
+    
+    reg16[PC] = readMemory16(reg16[SP]);
+    reg16[SP] += 2;
+};
+
+fillMask(0xc0, 0x38, rootOps, (instruction, oldPc) => {
+    log("> ret cc");
+    time += 5;
+    
+    if(doCondition(instruction)) {
+        time += 6;
+        
+        reg16[PC] = readMemory16(reg16[SP]);
+        reg16[SP] += 2;
+    }
+});
+
+parentOps[0xed][0x4d] = function(instruction, oldPc) {
+    log("> reti");
+    time += 14;
+    
+    reg16[PC] = readMemory16(reg16[SP]);
+    reg16[SP] += 2;
+    
+    //TODO: More interrupt stuff?
+};
+
+parentOps[0xed][0x45] = function(instruction, oldPc) {
+    log("> retn");
+    time += 14;
+    
+    reg16[PC] = readMemory16(reg16[SP]);
+    reg16[SP] += 2;
+    
+    //TODO: More interrupt stuff?
+    iff1 = iff2;
+};
+
+fillMask(0xc7, 0x38, rootOps, (instruction, oldPc) => {
+    log("> rst p");
+    
+    console.error("[Z80] RST not yet implemented");
+});
