@@ -1704,3 +1704,143 @@ fillMask(0xc7, 0x38, rootOps, (instruction, oldPc) => {
     
     console.error("[Z80] RST not yet implemented");
 });
+
+
+// ----
+// Input and Output Group
+// ----
+// Note: Reads give 0xff, writes do nothing
+
+rootOps[0xdb] = function(instruction, oldPc) {
+    log("> in a,(n)");
+    time += 11;
+    
+    pcAndAdvance(1);
+    
+    reg8[A] = 0xff;
+};
+
+fillMask(0x40, 0x30, parentOps[0xed], (instruction, oldPc) => {
+    log("> in a,(c)");
+    time += 12;
+    let reg = (instruction >>> 3) & 0b111;
+    
+    reg8[reg] = 0xff;
+    
+    reg8[F] &= ~FC;
+    reg8[F] |= FPV;
+});
+
+parentOps[0xed][0xa2] = function(instruction, oldPc) {
+    log("> ini");
+    time += 16;
+    
+    reg8[B] --;
+    writeMemory8(getRegPair(HL), 0xff);
+    setRegPair(HL, getRegPair(HL) + 1);
+    
+    reg8[F] &= ~FC;
+    reg8[F] |= FN;
+    if(!reg8[B]) reg8[F] |= FZ;
+};
+
+parentOps[0xed][0xb2] = function(instruction, oldPc) {
+    log("> inir");
+    
+    parentOps[0xed][0xa2](instruction, oldPc); // Call the ini instruction
+    
+    // Check its flags
+    if(reg8[F] & FZ) {
+        time += 5;
+        reg16[PC] -= 2;
+    }
+};
+
+parentOps[0xed][0xaa] = function(instruction, oldPc) {
+    log("> ind");
+    time += 16;
+    
+    reg8[B] --;
+    writeMemory8(getRegPair(HL), 0xff);
+    setRegPair(HL, getRegPair(HL) - 1);
+    
+    reg8[F] &= ~FC;
+    reg8[F] |= FN;
+    if(!reg8[B]) reg8[F] |= FZ;
+};
+
+parentOps[0xed][0xba] = function(instruction, oldPc) {
+    log("> indr");
+    
+    parentOps[0xed][0xaa](instruction, oldPc); // Call the ini instruction
+    
+    // Check its flags
+    if(reg8[F] & FZ) {
+        time += 5;
+        reg16[PC] -= 2;
+    }
+};
+
+rootOps[0xd3] = function(instruction, oldPc) {
+    log("> out (n),a");
+    time += 11;
+    
+    pcAndAdvance(1);
+    
+    // Do nothing
+};
+
+fillMask(0x41, 0x30, parentOps[0xed], (instruction, oldPc) => {
+    log("> out a,(c)");
+    time += 12;
+    
+    // Do nothing
+});
+
+parentOps[0xed][0xa3] = function(instruction, oldPc) {
+    log("> outi");
+    time += 16;
+    
+    reg8[B] --;
+    setRegPair(HL, getRegPair(HL) + 1);
+    
+    reg8[F] &= ~FC;
+    reg8[F] |= FN;
+    if(!reg8[B]) reg8[F] |= FZ;
+};
+
+parentOps[0xed][0xb3] = function(instruction, oldPc) {
+    log("> outir");
+    
+    parentOps[0xed][0xa3](instruction, oldPc); // Call the ini instruction
+    
+    // Check its flags
+    if(reg8[F] & FZ) {
+        time += 5;
+        reg16[PC] -= 2;
+    }
+};
+
+parentOps[0xed][0xab] = function(instruction, oldPc) {
+    log("> outd");
+    time += 16;
+    
+    reg8[B] --;
+    setRegPair(HL, getRegPair(HL) - 1);
+    
+    reg8[F] &= ~FC;
+    reg8[F] |= FN;
+    if(!reg8[B]) reg8[F] |= FZ;
+};
+
+parentOps[0xed][0xbb] = function(instruction, oldPc) {
+    log("> outdr");
+    
+    parentOps[0xed][0xab](instruction, oldPc); // Call the ini instruction
+    
+    // Check its flags
+    if(reg8[F] & FZ) {
+        time += 5;
+        reg16[PC] -= 2;
+    }
+};
