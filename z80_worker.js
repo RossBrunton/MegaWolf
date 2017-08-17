@@ -398,13 +398,6 @@ parentOps[0xcb] = {};
 // And this is the list of opcodes which have no parents
 let rootOps = {};
 
-rootOps[0xe9] = function(instruction, oldPc) {
-    log("> jp (hl)");
-    time += 4;
-    
-    reg16[PC] = getRegPair(HL);
-};
-
 // Indirects: Some instructions use HL, IX or IY depending on the first word of the instruction, this handles all three
 //  at once as part of the instruction decoding
 let indirect = 0b111; // IX, IY or 0b111 (to indicate none)
@@ -1545,3 +1538,90 @@ fillMask(0x80, 0x1f, parentOps[0xcb], (instruction, oldPc) => {
     
     bitSet(instruction, src & 0xff);
 });
+
+
+// ----
+// Jump Group
+// ----
+let doCondition = function(instruction) {
+    let con = (instruction >> 3) & 0b111;
+    let flag;
+    
+    switch(con & 0b110) {
+        case 0b000:
+            flag = reg8[F] & FZ;
+            break;
+        
+        case 0b010:
+            flag = reg8[F] & FC;
+            break;
+        
+        case 0b100:
+            flag = reg8[F] & FPV;
+            break;
+        
+        case 0b110:
+            flag = reg8[F] & FS;
+            break;
+    }
+    
+    return (flag != 0) == ((con & 0b1) != 0);
+}
+
+rootOps[0xc3] = function(instruction, oldPc) {
+    log("> jp nn");
+    time += 10;
+    
+    reg16[PC] = pcAndAdvance(2);
+};
+
+fillMask(0xc2, 0x38, rootOps, (instruction, oldPc) => {
+    log("> jp cc,nn");
+    time += 10;
+    
+    if(doCondition(instruction)) {
+        reg16[PC] = pcAndAdvance(2);
+    }
+});
+
+rootOps[0x18] = function(instruction, oldPc) {
+    log("> jr e");
+    time += 12;
+    
+    let displacement = pcAndAdvance(1);
+    
+    reg16[PC] += makeSigned(displacement, 1) + 2;
+};
+
+fillMask(0x20, 0x18, rootOps, (instruction, oldPc) => {
+    log("> jr cc,e");
+    time += 10;
+    
+    let displacement = pcAndAdvance(1);
+    
+    if(doCondition(instruction & 0x18)) {
+        reg16[PC] += makeSigned(displacement, 1) + 2;
+    }
+});
+
+rootOps[0xe9] = function(instruction, oldPc) {
+    log("> jp (*)");
+    time += 4;
+    if(indirect != 0b111) time += 4;
+    
+    reg16[PC] = getIndirect();
+};
+
+rootOps[0x10] = function(instruction, oldPc) {
+    log("> djnz");
+    time += 8;
+    
+    let displacement = pcAndAdvance(1);
+    
+    reg8[B] --;
+    
+    if(reg[B] != 0) {
+        time += 5;
+        reg16[PC] += makeSigned(displacement, 1) + 2;
+    }
+};
