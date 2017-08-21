@@ -21,6 +21,11 @@ const SHM_BANK = 3; // Memory bank, converted such that it can just be ORed with
 const MEM_NONE = 0; // Memory bus: SHM_IO is set by the worker depending on the operation, which is then cleared by the
 const MEM_READ = 1; //  main Z80 class
 const MEM_WRITE = 2;
+const MEM_IOREAD = 3;
+const MEM_IOWRITE = 4;
+
+const MODE_MD = "md"; // Mega drive
+const MODE_MS = "ms"; // Master system
 
 console.log("Z80 Worker Started!");
 
@@ -235,6 +240,13 @@ self.onmessage = function(e) {
         
         case MSG_NEWROM:
             rom = new DataView(data[0]);
+            mode = data[1];
+            
+            if(mode == MODE_MS) {
+                // In SMS mode, we cannot be stopped and always have the bus
+                stopped = false;
+                hasBus = true;
+            }
             break;
         
         case MSG_STOP:
@@ -282,6 +294,7 @@ let halted = false;
 let iff1 = 0; // Interupt flip flops
 let iff2 = 0;
 let intMode = IM0; // Interrupt mode
+let mode = MODE_MD;
 
 let reg8 = new Uint8Array(R + 1);
 let reg16 = new Uint16Array(PC + 1);
@@ -309,26 +322,52 @@ let doFrame = function(factor) {
 };
 
 let readMemory8 = function(i) {
-    if(i < 0x4000) {
-        // RAM
-        i &= 0x1fff;
-        return ram.getUint8(i);
+    if(mode == MODE_MD) {
+        if(i < 0x4000) {
+            // RAM
+            i &= 0x1fff;
+            return ram.getUint8(i);
+        }
+        
+        Atomics.store(shared, SHM_ADDR, i);
+        Atomics.store(shared, SHM_IO, MEM_READ);
+        Atomics.wait(shared, SHM_IO, MEM_READ);
+        return shared[SHM_DATA];
+    }else{
+        if(i < 0xbfff) {
+            // ROM
+            return rom.getUint8(i);
+        }
+        
+        if(i >= 0xc000) {
+            // RAM
+            i &= 0x1fff;
+            return ram.getUint8(i);
+        }
     }
-    
-    Atomics.store(shared, SHM_ADDR, i);
-    Atomics.store(shared, SHM_IO, MEM_READ);
-    Atomics.wait(shared, SHM_IO, MEM_READ);
-    return shared[SHM_DATA];
 };
 
 let readMemory16 = function(i) {
-    if(i < 0x4000) {
-        // RAM
-        i &= 0x1fff;
-        return ram.getUint16(i, true);
+    if(mode == MODE_MD) {
+        if(i < 0x4000) {
+            // RAM
+            i &= 0x1fff;
+            return ram.getUint16(i, true);
+        }
+        
+        return (readMemory8(i + 1) << 8) | readMemory8(i);
+    }else{
+        if(i < 0xbfff) {
+            // ROM
+            return rom.getUint16(i, true);
+        }
+        
+        if(i >= 0xc000) {
+            // RAM
+            i &= 0x1fff;
+            return ram.getUint16(i, true);
+        }
     }
-    
-    return (readMemory8(i + 1) << 8) | readMemory8(i);
 };
 
 let readMemoryN = function(i, n) {
@@ -340,31 +379,61 @@ let readMemoryN = function(i, n) {
 };
 
 let writeMemory8 = function(i, val) {
-    if(i < 0x4000) {
-        // RAM
-        i &= 0x1fff;
-        ram.setUint8(i, val);
-        return;
+    if(mode == MODE_MD) {
+        if(i < 0x4000) {
+            // RAM
+            i &= 0x1fff;
+            ram.setUint8(i, val);
+            return;
+        }
+        
+        Atomics.store(shared, SHM_DATA, val);
+        Atomics.store(shared, SHM_ADDR, i);
+        Atomics.store(shared, SHM_IO, MEM_WRITE);
+        Atomics.wait(shared, SHM_IO, MEM_WRITE);
+    }else{
+        if(i < 0xbfff) {
+            // ROM
+            console.error("Attempted ROM write at " + i.toString(16));
+            return;
+        }
+        
+        if(i >= 0xc000) {
+            // RAM
+            i &= 0x1fff;
+            ram.setUint8(i, val);
+            return;
+        }
     }
-    
-    Atomics.store(shared, SHM_DATA, val);
-    Atomics.store(shared, SHM_ADDR, i);
-    Atomics.store(shared, SHM_IO, MEM_WRITE);
-    Atomics.wait(shared, SHM_IO, MEM_WRITE);
 };
 
 let writeMemory16 = function(i, val) {
-    if(i < 0x4000) {
-        // RAM
-        i &= 0x1fff;
-        ram.setUint16(i, val, true);
-        return;
+    if(mode == MODE_MD) {
+        if(i < 0x4000) {
+            // RAM
+            i &= 0x1fff;
+            ram.setUint16(i, val, true);
+            return;
+        }
+        
+        let hi = val >>> 8;
+        let lo = val & 0xff;
+        writeMemory8(i + 1, hi);
+        writeMemory8(i, lo);
+    }else{
+        if(i < 0xbfff) {
+            // ROM
+            console.error("Attempted ROM write at " + i.toString(16));
+            return;
+        }
+        
+        if(i >= 0xc000) {
+            // RAM
+            i &= 0x1fff;
+            ram.setUint16(i, val, true);
+            return;
+        }
     }
-    
-    let hi = val >>> 8;
-    let lo = val & 0xff;
-    writeMemory8(i + 1, hi);
-    writeMemory8(i, lo);
 };
 
 let writeMemoryN = function(i, val, n) {
@@ -439,7 +508,22 @@ let reset = function(entry) {
     iff1 = 0;
     iff2 = 0;
     reg16[PC] = entry;
-}
+};
+
+let portIn = function(port) {
+    Atomics.store(shared, SHM_ADDR, port);
+    Atomics.store(shared, SHM_IO, MEM_IOREAD);
+    Atomics.wait(shared, SHM_IO, MEM_IOREAD);
+    
+    return shared[SHM_DATA];
+};
+
+let portOut = function(port, value) {
+    Atomics.store(shared, SHM_DATA, value);
+    Atomics.store(shared, SHM_ADDR, port);
+    Atomics.store(shared, SHM_IO, MEM_IOWRITE);
+    Atomics.wait(shared, SHM_IO, MEM_IOWRITE);
+};
 
 let doInstruction = function() {
     // Get the first word of the opcode
@@ -1115,10 +1199,10 @@ fillMask(0xbf, 0x07, rootOps, (instruction, oldPc) => {
 });
 
 rootOps[0xfe] = function(instruction, oldPc) {
-    log("> cp a,n");
     time += 7;
     
     let val = pcAndAdvance(1);
+    log("> cp A,#$" + val.toString(16));
     
     reg8[F] = subCf(reg8[A], val, 1, 2, false);
 };
@@ -1130,13 +1214,13 @@ fillMask(0x04, 0x38, rootOps, (instruction, oldPc) => {
     let val = 0;
     
     if(src == 0b110) {
-        log("> inc (*)");
+        log("> inc (" + indirectString() + " + d)");
         time += 7;
         if(indirect != 0b111) time += 12;
         val = readMemory8(getIndirect() + getIndirectDisplacement());
         writeMemory8(getIndirect() + getIndirectDisplacement(), val + 1);
     }else{
-        log("> inc r");
+        log("> inc " + regString(src));
         val = reg8[src];
         reg8[src] ++;
     }
@@ -1151,13 +1235,13 @@ fillMask(0x05, 0x38, rootOps, (instruction, oldPc) => {
     let val = 0;
     
     if(src == 0b110) {
-        log("> dec (*)");
+        log("> dec (" + indirectString() + " + d)");
         time += 7;
         if(indirect != 0b111) time += 12;
         val = readMemory8(getIndirect() + getIndirectDisplacement());
         writeMemory8(getIndirect() + getIndirectDisplacement(), val - 1);
     }else{
-        log("> dec r");
+        log("> dec " + regString(src));
         val = reg8[src];
         reg8[src] --;
     }
@@ -1688,41 +1772,52 @@ let doCondition = function(instruction) {
     return (flag != 0) == ((con & 0b1) != 0);
 }
 
-rootOps[0xc3] = function(instruction, oldPc) {
-    log("> jp nn");
-    time += 10;
+let conditionString = function(instruction) {
+    let con = (instruction >> 3) & 0b111;
     
-    reg16[PC] = pcAndAdvance(2);
-};
+    return ["NZ", "Z", "NC", "C", "PO", "PE", "P", "M"][con];
+}
 
-fillMask(0xc2, 0x38, rootOps, (instruction, oldPc) => {
-    log("> jp cc,nn");
+rootOps[0xc3] = function(instruction, oldPc) {
     time += 10;
     
     let n = pcAndAdvance(2);
     
+    reg16[PC] = n;
+    log("> jp #$" + n.toString(16));
+};
+
+fillMask(0xc2, 0x38, rootOps, (instruction, oldPc) => {
+    time += 10;
+    
+    let n = pcAndAdvance(2);
+    
+    log("> jp " + conditionString(instruction) + ", #$" + n.toString(16));
+    
     if(doCondition(instruction)) {
+        log("Performing jump");
         reg16[PC] = n;
     }
 });
 
 rootOps[0x18] = function(instruction, oldPc) {
-    log("> jr e");
     time += 12;
     
     let displacement = pcAndAdvance(1);
+    log("> jr #$" + makeSigned(displacement, 1).toString(16));
     
-    reg16[PC] += makeSigned(displacement, 1) + 2;
+    reg16[PC] += makeSigned(displacement, 1);
 };
 
 fillMask(0x20, 0x18, rootOps, (instruction, oldPc) => {
-    log("> jr cc,e");
     time += 10;
     
     let displacement = pcAndAdvance(1);
+    log("> jr " + conditionString(instruction & 0x18) + ", #$" + makeSigned(displacement, 1).toString(16));
     
     if(doCondition(instruction & 0x18)) {
-        reg16[PC] += makeSigned(displacement, 1) + 2;
+        log("Performing jump");
+        reg16[PC] += makeSigned(displacement, 1);
     }
 });
 
@@ -1837,34 +1932,42 @@ fillMask(0xc7, 0x38, rootOps, (instruction, oldPc) => {
 // ----
 // Input and Output Group
 // ----
-// Note: Reads give 0xff, writes do nothing
 
 rootOps[0xdb] = function(instruction, oldPc) {
     log("> in a,(n)");
     time += 11;
     
-    pcAndAdvance(1);
+    let port = pcAndAdvance(1);
+    let val = portIn(port);
     
-    reg8[A] = 0xff;
+    reg8[A] = val;
 };
 
 fillMask(0x40, 0x30, parentOps[0xed], (instruction, oldPc) => {
-    log("> in a,(c)");
+    log("> in r,(c)");
     time += 12;
     let reg = (instruction >>> 3) & 0b111;
     
-    reg8[reg] = 0xff;
+    let port = reg8[C];
+    let val = portIn(port);
+    
+    reg8[reg] = val;
     
     reg8[F] &= ~FC;
-    reg8[F] |= FPV;
+    if(isNegative(val, 1)) reg8[F] |= FS;
+    if(!val) reg8[F] |= FZ;
+    if(parity(val)) reg8[F] |= FPV;
 });
 
 parentOps[0xed][0xa2] = function(instruction, oldPc) {
     log("> ini");
     time += 16;
     
+    let port = reg8[C];
+    let val = portIn(port);
+    
     reg8[B] --;
-    writeMemory8(getRegPair(HL), 0xff);
+    writeMemory8(getRegPair(HL), val);
     setRegPair(HL, getRegPair(HL) + 1);
     
     reg8[F] &= ~FC;
@@ -1887,6 +1990,9 @@ parentOps[0xed][0xb2] = function(instruction, oldPc) {
 parentOps[0xed][0xaa] = function(instruction, oldPc) {
     log("> ind");
     time += 16;
+    
+    let port = reg8[C];
+    let val = portIn(port);
     
     reg8[B] --;
     writeMemory8(getRegPair(HL), 0xff);
@@ -1913,21 +2019,25 @@ rootOps[0xd3] = function(instruction, oldPc) {
     log("> out (n),a");
     time += 11;
     
-    pcAndAdvance(1);
-    
-    // Do nothing
+    let port = pcAndAdvance(1);
+    portOut(port, reg8[A]);
 };
 
 fillMask(0x41, 0x30, parentOps[0xed], (instruction, oldPc) => {
-    log("> out a,(c)");
+    log("> out (c),r");
     time += 12;
+    let reg = (instruction >>> 3) & 0b111;
     
-    // Do nothing
+    let port = reg8[C];
+    portOut(port, reg8[A]);
 });
 
 parentOps[0xed][0xa3] = function(instruction, oldPc) {
     log("> outi");
     time += 16;
+    
+    let port = reg8[C];
+    portOut(port, readMemory8(getRegPair(HL)));
     
     reg8[B] --;
     setRegPair(HL, getRegPair(HL) + 1);
@@ -1940,7 +2050,7 @@ parentOps[0xed][0xa3] = function(instruction, oldPc) {
 parentOps[0xed][0xb3] = function(instruction, oldPc) {
     log("> outir");
     
-    parentOps[0xed][0xa3](instruction, oldPc); // Call the ini instruction
+    parentOps[0xed][0xa3](instruction, oldPc); // Call the outi instruction
     
     // Check its flags
     if(reg8[F] & FZ) {
@@ -1953,6 +2063,9 @@ parentOps[0xed][0xab] = function(instruction, oldPc) {
     log("> outd");
     time += 16;
     
+    let port = reg8[C];
+    portOut(port, readMemory8(getRegPair(HL)));
+    
     reg8[B] --;
     setRegPair(HL, getRegPair(HL) - 1);
     
@@ -1964,7 +2077,7 @@ parentOps[0xed][0xab] = function(instruction, oldPc) {
 parentOps[0xed][0xbb] = function(instruction, oldPc) {
     log("> outdr");
     
-    parentOps[0xed][0xab](instruction, oldPc); // Call the ini instruction
+    parentOps[0xed][0xab](instruction, oldPc); // Call the outd instruction
     
     // Check its flags
     if(reg8[F] & FZ) {

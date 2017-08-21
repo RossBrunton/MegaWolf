@@ -23,6 +23,8 @@ const SHM_BANK = 3; // Memory bank, converted such that it can just be ORed with
 const MEM_NONE = 0;
 const MEM_READ = 1;
 const MEM_WRITE = 2;
+const MEM_IOREAD = 3;
+const MEM_IOWRITE = 4;
 
 let u8 = new Uint8Array(1);
 let u16 = new Uint16Array(1);
@@ -35,7 +37,7 @@ let log = function(msg) {
     }
 }
 
-export class Z80 {    
+export class Z80 {
     constructor(emulator) {
         this.emu = emulator;
         
@@ -78,7 +80,7 @@ export class Z80 {
         log("Stopping reset");
         this.reset = false;
         this.worker.postMessage([MSG_RESET, []]);
-        if(!this.emu.m68kOwnBus) this.worker.postMessage([MSG_START, []]);
+        this.worker.postMessage([MSG_START, []]);
     }
     
     message(msg) {
@@ -163,22 +165,55 @@ export class Z80 {
         }
     }
     
+    _portIn(p) {
+        if(p == 0x7e) {
+            // V Counter
+            return this.emu.vdp.readHvCount() >>> 8;
+        }
+        
+        if(p == 0x7f) {
+            // H Counter
+            return this.emu.vdp.readHvCount() & 0xff;
+        }
+        
+        console.warn("Unknown port read " + p.toString(16));
+    }
+    
+    _portOut(p, val) {
+        if(p == 0xbe) {
+            // VDP data
+            this.emu.vdp.msWriteData(val);
+            return;
+        }
+        
+        if(p == 0xbf) {
+            // VDP control
+            this.emu.vdp.msWriteControl(val);
+            return;
+        }
+        
+        console.warn("Unknown port write " + p.toString(16) + " : " + val.toString(16));
+    }
+    
     checkWorker() {
         let io = Atomics.load(this.shared, SHM_IO);
         if(io) {
             if(io == MEM_READ) {
                 Atomics.store(this.shared, SHM_DATA, this.readMemory8(Atomics.load(this.shared, SHM_ADDR)));
-            }else{
-                // Write
+            }else if(io == MEM_WRITE) {
                 this.writeMemory8(Atomics.load(this.shared, SHM_ADDR), Atomics.load(this.shared, SHM_DATA));
+            }else if(io == MEM_IOREAD) {
+                Atomics.store(this.shared, SHM_DATA, this._portIn(Atomics.load(this.shared, SHM_ADDR)));
+            }else if(io == MEM_IOWRITE) {
+                this._portOut(Atomics.load(this.shared, SHM_ADDR), Atomics.load(this.shared, SHM_DATA));
             }
             Atomics.store(this.shared, SHM_IO, 0);
             Atomics.wake(this.shared, SHM_IO);
         }
     }
     
-    loadRom(newRom) {
-        this.worker.postMessage([MSG_NEWROM, [newRom.buffer]]);
+    loadRom(newRom, mode) {
+        this.worker.postMessage([MSG_NEWROM, [newRom.buffer, mode]]);
     }
     
     bankWrite(val) {

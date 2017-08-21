@@ -43,6 +43,10 @@ const VSRAM_R = 0b0100;
 const VSRAM_W = 0b0101;
 const CRAM_R = 0b1000;
 
+const MS_VRAM = 0b01;
+const MS_CRAM = 0b11;
+const MS_REGS = 0b10;
+
 const DMA_BYTES_PER_SECOND = 3374789;
 
 let colours = function(x) {
@@ -80,6 +84,7 @@ export class Vdp {
         this.awaitingFill = false;
         
         this.address = 0;
+        this.addressTmp = 0;
         this.registers[RSTATUS] = 0x3600; // Empty is set
     }
     
@@ -126,6 +131,38 @@ export class Vdp {
         }
     }
     
+    msWriteControl(value) {
+        if((value & 0xc000) == 0x8000 && !this.dblWord) {
+            // Internal register write
+            let addr = (value >> 8) & 0x7f;
+            let data = value & 0xff;
+            this.registers[addr] = data;
+        }else{
+            if(this.dblWord) {
+                // Second word
+                let cd = (value >>> 6) & 0b11;
+                this.registers[RCODE] = cd;
+                
+                this.addressTmp |= (value & 0x3f) << 8;
+                
+                if(cd == MS_REGS) {
+                    // Write to a register
+                    this.registers[value & 0xf] = this.addressTmp;
+                }else{
+                    // Set the write address
+                    this.address = this.addressTmp;
+                }
+                
+                this.dblWord = false;
+            }else{
+                // First word
+                this.dblWord = true;
+                
+                this.addressTmp = value & 0xff;
+            }
+        }
+    }
+    
     readControl() {
         this.dblWord = false;
         return this.registers[RSTATUS];
@@ -162,6 +199,21 @@ export class Vdp {
         
         arr.setUint16(this.address, value, false);
         this.address += this.registers[RAUTOINC];
+    }
+    
+    msWriteData(value) {
+        this.dblWord = false;
+        
+        let arr;
+        switch(this.registers[RCODE] & 0b11) {
+            case MS_VRAM: arr = this.vram; break;
+            case MS_CRAM: arr = this.cram; break;
+            default: return;
+        }
+        
+        arr.setUint8(this.address, value);
+        this.address += 1;
+        this.address &= 0x3fff;
     }
     
     readData() {

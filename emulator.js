@@ -11,6 +11,9 @@ export const PAL = "pal";
 const NTSC_CLOCK = 7670453;
 const PAL_CLOCK = 7600489;
 
+const MODE_MD = "md"; // Mega drive
+const MODE_MS = "ms"; // Master system
+
 const FPS = 60;
 
 const DEBUG = false;
@@ -44,12 +47,14 @@ export class Emulator {
         this.z80 = new Z80(this);
         this.vdp = new Vdp(this);
         
-        this.busOwner = "m68k";
+        this.busOwner = "z80";
         
         this.ports = [new Gamepad3(65, 79, 69, 13), new Controller(), new Controller()];
         
         this.time = 0;
         this.displayCounter = 0.0;
+        this.mode = MODE_MD;
+        this.workerCheckInterval = 0;
     }
     
     loadRom(rom) {
@@ -80,14 +85,34 @@ export class Emulator {
         }else{
             let newBuff = new DataView(new SharedArrayBuffer(dv.byteLength));
             
-            for(let i = 0; i < dv.byteLength; i += 4) {
+            let i;
+            for(i = 0; i <= dv.byteLength - 4; i += 4) {
                 newBuff.setUint32(i, dv.getUint32(i));
+            }
+            
+            if(i == dv.byteLength + 2) {
+                newBuff.setUint16(i - 2, dv.getUint16(i - 2));
             }
             
             this.rom = newBuff;
         }
         
-        this.z80.loadRom(this.rom);
+        // Check if it is a master system ROM
+        this.mode = MODE_MD;
+        outer: for(let start of [0x1ff0, 0x3ff0, 0x7ff0]) {
+            let msg = [0x54, 0x4d, 0x52, 0x20, 0x53, 0x45, 0x47, 0x41];
+            for(let i = 0; i < msg.length; i ++) {
+                if(msg[i] != this.rom.getUint8(start + i)) {
+                    continue outer;
+                }
+            }
+            
+            console.log("SMS ROM detected, switching to SMS mode.");
+            this.mode = MODE_MS;
+            break outer;
+        }
+        
+        this.z80.loadRom(this.rom, this.mode);
     }
     
     readMemory(addr) {
@@ -116,7 +141,8 @@ export class Emulator {
         switch(addr & ~1) {
             case 0xa11100:
                 // Z80 /BUSREQ
-                return (this.busOwner != "m68k" || this.z80.reset) ? 0x1 : 0x0;
+                // Do we need to check the reset state?
+                return (this.busOwner != "m68k"/* || this.z80.reset*/) ? 0x1 : 0x0;
             
             case 0xa10000:
                 // Version register
@@ -152,7 +178,7 @@ export class Emulator {
                 return this.vdp.readHvCount();
         }
         
-        //console.warn("Read from unknown memory address 0x"+addr.toString(16));
+        console.warn("Read from unknown memory address 0x"+addr.toString(16));
         return 0;
     }
     
@@ -350,15 +376,20 @@ export class Emulator {
         
         //console.log("Delta: " + (this.time - this.m68k.time));
         
-        while(this.m68k.time < this.time) {
-            let ret = this.m68k.doInstruction();
-            this.z80.checkWorker();
-            
-            if(!ret) {
-                console.log("Emulator stopping...");
-                this.running = false;
-                return;
+        if(this.mode == MODE_MD) {
+            while(this.m68k.time < this.time) {
+                let ret = this.m68k.doInstruction();
+                this.z80.checkWorker();
+                
+                if(!ret) {
+                    console.log("Emulator stopping...");
+                    this.running = false;
+                    return;
+                }
             }
+        }else{
+            clearInterval(this.workerCheckInterval);
+            setInterval(this.z80.checkWorker.bind(this.z80), 0);
         }
         //this.m68k.updateSpans();
         

@@ -44,6 +44,9 @@ const HSCROLL_SCANLINE = 0b11;
 const VSCROLL_ALL = 0b0;
 const VSCROLL_TILE = 0b1;
 
+const MODE_MD = "md"; // Mega drive
+const MODE_MS = "ms"; // Master system
+
 const A = 0;
 const B = 1;
 const S = 2;
@@ -67,6 +70,8 @@ self.onmessage = function(e) {
             vram = new DataView(data[1]);
             cram = new DataView(data[2]);
             vsram = new DataView(data[3]);
+            
+            registers[RAUTOINC] = 2;
             break;
         
         case MSG_RAF:
@@ -215,11 +220,19 @@ let cx, cy; // On the canvas
 let background; // Background colour
 let first; // First plane?
 let lblank; // Blank the leftmost 8 pixels (0 = off, 8 = on)
+let mode;
 
 let doFrame = function() {
     // TODO: HV probably isn't 100% right
     registers[RV] = 0;
     registers[RH] = 0;
+    
+    if(registers[RM2] & 0b100) {
+        mode = MODE_MD;
+    }else{
+        mode = MODE_MS;
+    }
+    
     
     rows = getDisplayRows();
     cols = getDisplayCols();
@@ -285,39 +298,44 @@ let drawPlane = function(start, priority, view, plane) {
 }
 
 let drawSprites = function(start, priority, view) {
-    while(start) {
-        let vpos = vram.getUint16(start, false) & 0x03ff;
-        let hpos = vram.getUint16(start + 6, false) & 0x01ff;
-        let vsize = (vram.getUint16(start + 2, false) >> 8) & 0b11;
-        let hsize = (vram.getUint16(start + 2, false) >> 10) & 0b11;
-        let cell = (vram.getUint16(start + 4, false));
-        
-        if(((cell & 0x8000) == 0x8000) == priority) {
-            // Priority is correct
-            let flipx = (cell & 0x0800) != 0;
-            let flipy = (cell & 0x1000) != 0;
+    if(mode == MODE_MD) {
+        while(start) {
+            let vpos = vram.getUint16(start, false) & 0x03ff;
+            let hpos = vram.getUint16(start + 6, false) & 0x01ff;
+            let vsize = (vram.getUint16(start + 2, false) >> 8) & 0b11;
+            let hsize = (vram.getUint16(start + 2, false) >> 10) & 0b11;
+            let cell = (vram.getUint16(start + 4, false));
             
-            for(let cx = 0; cx <= hsize; cx ++) {
-                for(let cy = 0; cy <= vsize; cy ++) {
-                    let dx = cx;
-                    let dy = cy;
-                    
-                    if(flipx) dx = hsize - dx;
-                    if(flipy) dy = vsize - dy;
-                    
-                    drawTile(cell, hpos - 128 + (dx * 8), vpos - 128 + (dy * 8), view, S);
-                    cell ++;
+            if(((cell & 0x8000) == 0x8000) == priority) {
+                // Priority is correct
+                let flipx = (cell & 0x0800) != 0;
+                let flipy = (cell & 0x1000) != 0;
+                
+                for(let cx = 0; cx <= hsize; cx ++) {
+                    for(let cy = 0; cy <= vsize; cy ++) {
+                        let dx = cx;
+                        let dy = cy;
+                        
+                        if(flipx) dx = hsize - dx;
+                        if(flipy) dy = vsize - dy;
+                        
+                        drawTile(cell, hpos - 128 + (dx * 8), vpos - 128 + (dy * 8), view, S);
+                        cell ++;
+                    }
                 }
             }
+            
+            // Calculate link
+            let link = vram.getUint16(start + 2, false) & 0x7f;
+            if(link != 0) {
+                start = (registers[RSPRITE_NT] << 9) + (link * 8);
+            }else{
+                start = 0;
+            }
         }
+    }else{
+        // Master system
         
-        // Calculate link
-        let link = vram.getUint16(start + 2, false) & 0x7f;
-        if(link != 0) {
-            start = (registers[RSPRITE_NT] << 9) + (link * 8);
-        }else{
-            start = 0;
-        }
     }
 }
 
