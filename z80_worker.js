@@ -5,6 +5,22 @@ const MSG_STOP = 1;
 const MSG_INIT = 2;
 const MSG_RESET = 3;
 const MSG_FRAME = 4;
+const MSG_NEWROM = 5;
+
+// Bus release/acquire
+const MSG_RELEASE = 6;
+const MSG_RELEASE_ACK = 7;
+const MSG_ACQUIRE = 8;
+const MSG_ACQUIRE_ACK = 9;
+
+const SHM_IO = 0;
+const SHM_DATA = 1;
+const SHM_ADDR = 2;
+const SHM_BANK = 3; // Memory bank, converted such that it can just be ORed with the access
+
+const MEM_NONE = 0; // Memory bus: SHM_IO is set by the worker depending on the operation, which is then cleared by the
+const MEM_READ = 1; //  main Z80 class
+const MEM_WRITE = 2;
 
 console.log("Z80 Worker Started!");
 
@@ -21,8 +37,8 @@ const H = 0b100;
 const L = 0b101;
 const F = 0b110;
 const PBASE = 0b1000;
-const I = 0b10001;
-const R = 0b10010;
+const I = 0b10000;
+const R = 0b10001;
 
 const IX = 0b00;
 const IY = 0b01;
@@ -39,17 +55,57 @@ const FS = 0x80;
 let BC = 0b00;
 let DE = 0b01;
 let HL = 0b10;
+let AF = 0b11;
 
 let IM0 = 0b00;
 let IM1 = 0b10;
 let IM2 = 0b11;
 
+let logp = 0;
+let logEntries = [];
+let memLogEntries = new Uint8Array(501);
+let memLogP = 0;
 const DEBUG = false;
+const LOGGING = true;
 let log = function(msg) {
     if(DEBUG) {
-        console.log("[Z80_w] "+msg);
+        console.log("[Z80_w] " + msg);
     }
-}
+    
+    if(!LOGGING) return;
+    logp += 1;
+    logp %= 500;
+    logEntries[logp] = msg;
+};
+
+let memLog = function(mem) {
+    if(!LOGGING) return;
+    memLogP += 1;
+    memLogP %= 500;
+    memLogEntries[memLogP] = mem;
+};
+
+let dumpLog = function() {
+    if(!LOGGING) {
+        console.log("Logging disabled...");
+    }else{
+        for(let i = logp; (i != logp +1) && !(logp == 500 && i == 0); (i != 0) ? i -- : i = 500) {
+            console.log(logEntries[i]);
+        }
+    }
+};
+
+let dumpMemLog = function() {
+    if(!LOGGING) {
+        console.log("Logging disabled...");
+    }else{
+        let ostr = "";
+        for(let i = memLogP; (i != memLogP +1) && !(memLogP == 500 && i == 0); (i != 0) ? i -- : i = 500) {
+            ostr = (memLogEntries[i] <= 0xf ? "0" : "") + memLogEntries[i].toString(16) + " " + ostr;
+        }
+        return ostr;
+    }
+};
 
 let isNegative = function(val, length) {
     if(val < 0) return true;
@@ -64,7 +120,7 @@ let isNegative = function(val, length) {
         console.error("Unknown length for isNegative!");
         return false;
     }
-}
+};
 
 let makeSigned = function(val, length) {
     if(val < 0) return val;
@@ -79,12 +135,12 @@ let makeSigned = function(val, length) {
         console.error("Unknown length for makeSigned!");
         return val;
     }
-}
+};
 
 let parity = function(val, length) {
     //TODO: Calculate parity
     return 0;
-}
+};
 
 let lengthMask = function(length) {
     switch(length) {
@@ -97,7 +153,7 @@ let lengthMask = function(length) {
         default:
             console.error("Unkown length value "+length+" for lengthMask");
     }
-}
+};
 
 // pv: 0 or 1 is literal, 2 is "calculate it"
 let subCf = function(a, b, length, pv, withCarry) { // a - b
@@ -113,7 +169,7 @@ let subCf = function(a, b, length, pv, withCarry) { // a - b
     if(isNegative(res, length)) f |= FS;
     
     return f;
-}
+};
 
 let addCf = function(a, b, length, withCarry) {
     let f = 0;
@@ -155,6 +211,16 @@ let addCf = function(a, b, length, withCarry) {
     if(isNegative(res, length)) f |= FS;
     
     return f;
+};
+
+let regString = function(r) {
+    return ["B", "C", "D", "E", "H", "L", "F", "A",
+        "B'", "C'", "D'", "E'", "H'", "L'", "F'", "A'",
+        "I", "R"][r];
+};
+
+let regPairString = function(p, af) {
+    return ["BC", "DE", "HL", !af ? "SP" : "AF"][p];
 }
 
 self.onmessage = function(e) {
@@ -162,9 +228,13 @@ self.onmessage = function(e) {
     
     switch(e.data[0]) {
         case MSG_INIT:
-            shared = new Uint32Array(data[0]);
+            shared = new Int32Array(data[0]);
             options = data[1];
             ram = new DataView(data[2]);
+            break;
+        
+        case MSG_NEWROM:
+            rom = new DataView(data[0]);
             break;
         
         case MSG_STOP:
@@ -183,16 +253,28 @@ self.onmessage = function(e) {
             reset(0x0000);
             break;
         
+        case MSG_RELEASE:
+            hasBus = false;
+            self.postMessage([MSG_RELEASE_ACK, []]);
+            break;
+        
+        case MSG_ACQUIRE:
+            hasBus = true;
+            self.postMessage([MSG_ACQUIRE_ACK, []]);
+            break;
+        
         default:
             console.error("Z80 worker got unknown message type "+e.data[0]);
             break;
     }
-}
+};
 
 let shared = null;
 let stopped = true;
+let hasBus = true;
 let options = null;
 let ram = null;
+let rom = null;
 let time = 0;
 let worldTime = 0; // Time here is in Z80 clock cycles
 let crashed = false;
@@ -215,7 +297,7 @@ let clock = function() {
 let doFrame = function(factor) {
     worldTime += ((clock() / FPS) * factor)|0;
     
-    if(stopped || crashed || halted) {
+    if(stopped || crashed || halted || !hasBus) {
         // Stopped, do nothing
         time = worldTime;
     }else{
@@ -233,8 +315,10 @@ let readMemory8 = function(i) {
         return ram.getUint8(i);
     }
     
-    console.error("[Z80_w] Invalid memory read 0x"+i.toString(16));
-    return 0;
+    Atomics.store(shared, SHM_ADDR, i);
+    Atomics.store(shared, SHM_IO, MEM_READ);
+    Atomics.wait(shared, SHM_IO, MEM_READ);
+    return shared[SHM_DATA];
 };
 
 let readMemory16 = function(i) {
@@ -244,8 +328,7 @@ let readMemory16 = function(i) {
         return ram.getUint16(i, true);
     }
     
-    console.error("[Z80_w] Invalid memory read 0x"+i.toString(16));
-    return 0;
+    return (readMemory8(i + 1) << 8) | readMemory8(i);
 };
 
 let readMemoryN = function(i, n) {
@@ -261,9 +344,13 @@ let writeMemory8 = function(i, val) {
         // RAM
         i &= 0x1fff;
         ram.setUint8(i, val);
+        return;
     }
     
-    console.error("[Z80_w] Invalid memory write 0x"+i.toString(16));
+    Atomics.store(shared, SHM_DATA, val);
+    Atomics.store(shared, SHM_ADDR, i);
+    Atomics.store(shared, SHM_IO, MEM_WRITE);
+    Atomics.wait(shared, SHM_IO, MEM_WRITE);
 };
 
 let writeMemory16 = function(i, val) {
@@ -271,9 +358,13 @@ let writeMemory16 = function(i, val) {
         // RAM
         i &= 0x1fff;
         ram.setUint16(i, val, true);
+        return;
     }
     
-    console.error("[Z80_w] Invalid memory write 0x"+i.toString(16));
+    let hi = val >>> 8;
+    let lo = val & 0xff;
+    writeMemory8(i + 1, hi);
+    writeMemory8(i, lo);
 };
 
 let writeMemoryN = function(i, val, n) {
@@ -284,7 +375,7 @@ let writeMemoryN = function(i, val, n) {
     }
 };
 
-let getRegPair = function(pair) {
+let getRegPair = function(pair, af) {
     switch(pair) {
         case BC:
             return (reg8[B] << 8) | reg8[C];
@@ -292,12 +383,15 @@ let getRegPair = function(pair) {
             return (reg8[D] << 8) | reg8[E];
         case HL:
             return (reg8[H] << 8) | reg8[L];
-        case 0b11: // SP
+        case 0b11: // SP or AF
+            if(af) {
+                return (reg8[A] << 8) | reg8[F];
+            }
             return reg16[SP];
     }
 };
 
-let setRegPair = function(pair, val) {
+let setRegPair = function(pair, val, af) {
     let hi = (val >>> 8) & 0xff;
     let lo = val & 0xff;
     
@@ -314,8 +408,13 @@ let setRegPair = function(pair, val) {
             reg8[H] = hi;
             reg8[L] = lo;
             break;
-        case 0b11: // SP
-            reg16[SP] = val;
+        case 0b11: // SP or AF
+            if(af) {
+                reg8[A] = hi;
+                reg8[F] = lo;
+            }else{
+                reg16[SP] = val;
+            }
             break;
     }
 };
@@ -324,10 +423,12 @@ let pcAndAdvance = function(length) {
     let toRet;
     if(length == 1) {
         toRet = readMemory8(reg16[PC]);
+        memLog(toRet);
         reg16[PC] += 1;
     }else{
         toRet = pcAndAdvance(1);
-        toRet |= pcAndAdvance(1) << 8;
+        let hi = pcAndAdvance(1);
+        toRet |= hi << 8;
     }
     return toRet;
 };
@@ -352,23 +453,27 @@ let doInstruction = function() {
     if(first == 0xdd) {
         indirect = IX;
         first = pcAndAdvance(1);
+        log("Using IX as indirect");
     }else if(first == 0xfd) {
         indirect = IY;
         first = pcAndAdvance(1);
+        log("Using IY as indirect");
     }
     
     if(first in rootOps) {
+        log("Running instruction 0x"+first.toString(16)+" at 0x"+oldPc.toString(16));
         rootOps[first](first, oldPc);
     }else if(first in parentOps) {
         let second = pcAndAdvance(1);
         if(second in parentOps[first]) {
+            log("Running instruction 0x"+first.toString(16)+":"+second.toString(16)+" at 0x"+oldPc.toString(16));
             parentOps[first][second](second, oldPc);
         }else{
-            console.error("[z80] Illegal second word found 0x"+first.toString(16) + ":"+second.toString(16));
+            console.error("[Z80_w] Illegal second word found 0x"+first.toString(16) + ":"+second.toString(16));
             crashed = true;
         }
     }else{
-        console.error("[z80] Illegal first word found 0x"+first.toString(16));
+        console.error("[Z80_w] Illegal first word found 0x"+first.toString(16));
         crashed = true;
     }
 };
@@ -407,7 +512,7 @@ let getIndirect = function() {
     }else{
         return reg16[indirect];
     }
-}
+};
 
 let setIndirect = function(v) {
     if(indirect == 0b111) {
@@ -415,7 +520,7 @@ let setIndirect = function(v) {
     }else{
         reg16[indirect] = v;
     }
-}
+};
 
 let getIndirectDisplacement = function() {
     if(indirect == 0b111) {
@@ -424,6 +529,11 @@ let getIndirectDisplacement = function() {
         return pcAndAdvance(1);
     }
 };
+
+let indirectString = function() {
+    if(indirect == 0b111) return "HL";
+    return ["IX", "IY"][indirect];
+}
 
 // ----
 // 8-bit load group
@@ -436,13 +546,13 @@ fillMask(0x40, 0x3f, rootOps, (instruction, oldPc) => {
     let src = instruction & 0b111;
     
     if(src == 0b110) {
-        log("> ld r,(*)");
+        log("> ld " + regString(dest) + ",(" + indirectString() + " + d)");
         reg8[dest] = readMemory8(getIndirect() + getIndirectDisplacement());
-    }else if(dest = 0b110) {
-        log("> ld (*),r");
+    }else if(dest == 0b110) {
+        log("> ld (" + indirectString() + " + d)," + regString(src));
         writeMemory8(getIndirect() + getIndirectDisplacement(), reg8[src]);
     }else{
-        log("> ld r,r'");
+        log("> ld " + regString(dest) + "," + regString(src));
         reg8[dest] = reg8[src];
     }
 });
@@ -458,10 +568,10 @@ fillMask(0x06, 0x38, rootOps, (instruction, oldPc) => {
 });
 
 rootOps[0x36] = function(instruction, oldPc) {
-    log("> ld (*),n");
     time += 10;
     
     let n = pcAndAdvance(1);
+    log("> ld (" + indirectString() +" + d),#$" + n.toString(16));
     
     writeMemory8(getIndirect() + getIndirectDisplacement(), n);
 };
@@ -504,16 +614,16 @@ rootOps[0x12] = function(instruction, oldPc) {
 };
 
 rootOps[0x32] = function(instruction, oldPc) {
-    log("> ld (nn),a");
     time += 13;
     
     let n = pcAndAdvance(2);
+    log("> ld ($#" + n.toString(16) + "),A");
     
     writeMemory8(n, reg8[A]);
 };
 
 parentOps[0xed][0x57] = function(instruction, oldPc) {
-    log("> ld a,i");
+    log("> ld A,I");
     time += 9;
     
     reg8[A] = reg8[I];
@@ -526,7 +636,7 @@ parentOps[0xed][0x57] = function(instruction, oldPc) {
 };
 
 parentOps[0xed][0x5f] = function(instruction, oldPc) {
-    log("> ld a,r");
+    log("> ld A,R");
     time += 9;
     
     reg8[A] = reg8[R];
@@ -539,14 +649,14 @@ parentOps[0xed][0x5f] = function(instruction, oldPc) {
 };
 
 parentOps[0xed][0x47] = function(instruction, oldPc) {
-    log("> ld i,a");
+    log("> ld I,A");
     time += 9;
     
     reg8[I] = reg8[A];
 };
 
 parentOps[0xed][0x4f] = function(instruction, oldPc) {
-    log("> ld r,a");
+    log("> ld R,A");
     time += 9;
     
     reg8[R] = reg8[A];
@@ -563,11 +673,11 @@ fillMask(0x01, 0x30, rootOps, (instruction, oldPc) => {
     let n = pcAndAdvance(2);
     
     if(dest == 0b10 && indirect != 0b111) {
-        log("> ld I*,nn");
+        log("> ld " + indirectString() + ",#$" + n.toString(16));
         time += 4;
         reg16[indirect] = n;
     }else{
-        log("> ld dd,nn");
+        log("> ld " + regPairString(dest) + ",#$" + n.toString(16));
         setRegPair(dest, n);
     }
 });
@@ -578,11 +688,11 @@ rootOps[0x2a] = function(instruction, oldPc) {
     let n = pcAndAdvance(2);
     
     if(indirect != 0b111) {
-        log("> ld I*,(nn)");
+        log("> ld " + indirectString() + ",(#$" + n.toString(16) + ")");
         time += 4;
         reg16[indirect] = readMemory16(n);
     }else{
-        log("> ld HL,(nn)");
+        log("> ld HL,(#$" + n.toString(16) + ")");
         setRegPair(HL, readMemory16(n));
     }
 };
@@ -602,12 +712,11 @@ rootOps[0x22] = function(instruction, oldPc) {
     
     let n = pcAndAdvance(2);
     
+    log("> ld (#$" + n.toString(16) + ")," + indirectString());
     if(indirect != 0b111) {
-        log("> ld (nn),I*");
         time += 4;
         writeMemory16(n, reg16[indirect]);
     }else{
-        log("> ld (nn),HL");
         writeMemory16(n, getRegPair(HL));
     }
 };
@@ -618,60 +727,55 @@ fillMask(0x43, 0x30, parentOps[0xed], (instruction, oldPc) => {
     let src = (instruction >> 4) & 0b11;
     let n = pcAndAdvance(2);
     
-    log("> ld (nn),dd");
+    log("> ld (#$" + n.toString(16) + ")," + regPairString(src));
     writeMemory16(n, getRegPair(src));
 });
 
 rootOps[0xf9] = function(instruction, oldPc) {
     time += 6;
     
-    let n = pcAndAdvance(2);
-    
+    log("> ld SP," + indirectString());
     if(indirect != 0b111) {
-        log("> ld (nn),I*");
         time += 4;
         reg16[SP] = reg16[indirect];
     }else{
-        log("> ld (nn),HL");
         reg16[SP] = getRegPair(HL);
     }
 };
 
-fillMask(0xc5, 0x30, parentOps[0xed], (instruction, oldPc) => {
+fillMask(0xc5, 0x30, rootOps, (instruction, oldPc) => {
     time += 11;
     
-    let n = pcAndAdvance(2);
     let q = (instruction >> 4) & 0b11;
     let val = 0;
     
     if(q == 0b10 && indirect != 0b111) {
-        log("> push I*");
+        log("> push " + indirectString());
         time += 4;
         val = reg16[indirect];
     }else{
-        log("> push qq");
-        val = getRegPair(q);
+        log("> push " + regPairString(q, true));
+        val = getRegPair(q, true);
     }
     
     reg16[SP] -= 2;
     writeMemory16(reg16[SP], val);
 });
 
-fillMask(0xc1, 0x30, parentOps[0xed], (instruction, oldPc) => {
+fillMask(0xc1, 0x30, rootOps, (instruction, oldPc) => {
     time += 10;
     
-    let n = pcAndAdvance(2);
     let q = (instruction >> 4) & 0b11;
     let val = readMemory16(reg16[SP]);
     reg16[SP] += 2;
     
     if(q == 0b10 && indirect != 0b111) {
-        log("> pop I*");
+        log("> pop " + indirectString());
         time += 4;
         reg16[indirect] = val;
     }else{
-        log("> pop qq");
-        setRegPair(q, val);
+        log("> pop " + regPairString(q, true));
+        setRegPair(q, val, true);
     }
 });
 
@@ -680,7 +784,7 @@ fillMask(0xc1, 0x30, parentOps[0xed], (instruction, oldPc) => {
 // Exchange, Block Transfer, and Search Group
 // ----
 rootOps[0xeb] = function(instruction, oldPc) {
-    log("> ex de,hl");
+    log("> ex DE,HL");
     time += 4;
     
     let tmp = getRegPair(DE);
@@ -689,7 +793,7 @@ rootOps[0xeb] = function(instruction, oldPc) {
 };
 
 rootOps[0x08] = function(instruction, oldPc) {
-    log("> ex af,af'");
+    log("> ex AF,AF'");
     time += 4;
     
     for(let r of [A, F]) {
@@ -829,12 +933,12 @@ let getArg = function(instruction, opName) {
     let src = instruction & 0b111;
     
     if(src == 0b110) {
-        log("> "+opName+" a,(*)");
+        log("> " + opName+" A,(" + indirectString() + " + d)");
         time += 3;
         if(indirect != 0b111) time += 12;
         return readMemory8(getIndirect() + getIndirectDisplacement());
     }else{
-        log("> "+opName+" a,r");
+        log("> "+opName+" A,"+regString(src));
         return reg8[src];
     }
 }
@@ -933,11 +1037,11 @@ fillMask(0xa0, 0x07, rootOps, (instruction, oldPc) => {
 });
 
 rootOps[0xe6] = function(instruction, oldPc) {
-    log("> and a,n");
     time += 7;
     
     let val = pcAndAdvance(1);
     reg8[A] &= val;
+    log("> and A,#$" + val.toString(16));
     
     let f = FH;
     if(isNegative(reg8[A], 1)) f |= FN;
@@ -960,11 +1064,12 @@ fillMask(0xb0, 0x07, rootOps, (instruction, oldPc) => {
 });
 
 rootOps[0xf6] = function(instruction, oldPc) {
-    log("> or a,n");
     time += 7;
     
     let val = pcAndAdvance(1);
     reg8[A] |= val;
+    
+    log("> or A,#$" + val.toString(16));
     
     let f = 0;
     if(isNegative(reg8[A], 1)) f |= FN;
@@ -987,11 +1092,12 @@ fillMask(0xaf, 0x07, rootOps, (instruction, oldPc) => {
 });
 
 rootOps[0xee] = function(instruction, oldPc) {
-    log("> xor a,n");
     time += 7;
     
     let val = pcAndAdvance(1);
     reg8[A] ^= val;
+    
+    log("> xor A,#$" + val.toString(16));
     
     let f = 0;
     if(isNegative(reg8[A], 1)) f |= FN;
@@ -1066,7 +1172,7 @@ fillMask(0x05, 0x38, rootOps, (instruction, oldPc) => {
 
 rootOps[0x27] = function(instruction, oldPc) {
     log("> daa");
-    console.error("[Z80] daa operator not implemented yet.");
+    console.error("[Z80_w] daa operator not implemented yet.");
     crashed = true;
 };
 
@@ -1136,11 +1242,13 @@ rootOps[0xfb] = function(instruction, oldPc) {
     iff2 = 1;
 };
 
-fillMask(0x48, 0x18, parentOps[0xed], (instruction, oldPc) => {
-    log("> im *");
+fillMask(0x46, 0x18, parentOps[0xed], (instruction, oldPc) => {
     time += 8;
     
     intMode = (instruction >> 3) & 0b11;
+    
+    if(intMode > 0) intMode --;
+    log("> im " + intMode);
 });
 
 // ----
@@ -1312,7 +1420,7 @@ rootOps[0x17] = function(instruction, oldPc) {
     log("> rla");
     time += 4;
     
-    let oldC = (reg8[F] & CF) ? 1 : 0;
+    let oldC = (reg8[F] & FC) ? 1 : 0;
     let c = reg8[A] >>> 7;
     
     reg8[A] <<= 1;
@@ -1322,7 +1430,7 @@ rootOps[0x17] = function(instruction, oldPc) {
     if(c) reg8[F] |= FC;
 };
 
-rootOps[0x07] = function(instruction, oldPc) {
+rootOps[0x0f] = function(instruction, oldPc) {
     log("> rrca");
     time += 4;
     
@@ -1335,11 +1443,11 @@ rootOps[0x07] = function(instruction, oldPc) {
     if(c) reg8[F] |= FC;
 };
 
-rootOps[0x17] = function(instruction, oldPc) {
+rootOps[0x1f] = function(instruction, oldPc) {
     log("> rra");
     time += 4;
     
-    let oldC = (reg8[F] & CF) ? 1 : 0;
+    let oldC = (reg8[F] & FC) ? 1 : 0;
     let c = reg8[A] & 0b1;
     
     reg8[A] >>>= 1;
@@ -1365,7 +1473,7 @@ fillMask(0x00, 0x7, parentOps[0xcb], (instruction, oldPc) => {
 fillMask(0x10, 0x7, parentOps[0xcb], (instruction, oldPc) => {
     log("> rl m");
     time += 8;
-    let oldC = (reg8[F] & CF) ? 1 : 0;
+    let oldC = (reg8[F] & FC) ? 1 : 0;
     
     let src = shiftGet(instruction);
     let c = src >>> 7;
@@ -1392,7 +1500,7 @@ fillMask(0x08, 0x7, parentOps[0xcb], (instruction, oldPc) => {
 fillMask(0x18, 0x7, parentOps[0xcb], (instruction, oldPc) => {
     log("> rr m");
     time += 8;
-    let oldC = (reg8[F] & CF) ? 1 : 0;
+    let oldC = (reg8[F] & FC) ? 1 : 0;
     
     let src = shiftGet(instruction);
     let c = src & 0b1;
@@ -1416,7 +1524,7 @@ fillMask(0x20, 0x7, parentOps[0xcb], (instruction, oldPc) => {
     shiftSet(instruction, src, c);
 });
 
-fillMask(0x21, 0x7, parentOps[0xcb], (instruction, oldPc) => {
+fillMask(0x28, 0x7, parentOps[0xcb], (instruction, oldPc) => {
     log("> sra m");
     time += 8;
     
@@ -1424,6 +1532,18 @@ fillMask(0x21, 0x7, parentOps[0xcb], (instruction, oldPc) => {
     let c = src & 0b1;
     
     src |= (src << 1) & 0x100;
+    src >>>= 1;
+    
+    shiftSet(instruction, src, c);
+});
+
+fillMask(0x38, 0x7, parentOps[0xcb], (instruction, oldPc) => {
+    log("> srl m");
+    time += 8;
+    
+    let src = shiftGet(instruction);
+    let c = src & 0b1;
+    
     src >>>= 1;
     
     shiftSet(instruction, src, c);
@@ -1500,7 +1620,7 @@ let bitSet = function(instruction, value) {
     }
 };
 
-fillMask(0x40, 0x1f, parentOps[0xcb], (instruction, oldPc) => {
+fillMask(0x40, 0x3f, parentOps[0xcb], (instruction, oldPc) => {
     log("> bit b,m");
     time += 8;
     
@@ -1513,7 +1633,7 @@ fillMask(0x40, 0x1f, parentOps[0xcb], (instruction, oldPc) => {
     reg8[F] |= FH;
 });
 
-fillMask(0xc0, 0x1f, parentOps[0xcb], (instruction, oldPc) => {
+fillMask(0xc0, 0x3f, parentOps[0xcb], (instruction, oldPc) => {
     log("> set b,m");
     time += 8;
     
@@ -1526,7 +1646,7 @@ fillMask(0xc0, 0x1f, parentOps[0xcb], (instruction, oldPc) => {
     bitSet(instruction, src);
 });
 
-fillMask(0x80, 0x1f, parentOps[0xcb], (instruction, oldPc) => {
+fillMask(0x80, 0x3f, parentOps[0xcb], (instruction, oldPc) => {
     log("> res b,m");
     time += 8;
     
@@ -1579,8 +1699,10 @@ fillMask(0xc2, 0x38, rootOps, (instruction, oldPc) => {
     log("> jp cc,nn");
     time += 10;
     
+    let n = pcAndAdvance(2);
+    
     if(doCondition(instruction)) {
-        reg16[PC] = pcAndAdvance(2);
+        reg16[PC] = n;
     }
 });
 
@@ -1605,7 +1727,7 @@ fillMask(0x20, 0x18, rootOps, (instruction, oldPc) => {
 });
 
 rootOps[0xe9] = function(instruction, oldPc) {
-    log("> jp (*)");
+    log("> jp " + indirectString());
     time += 4;
     if(indirect != 0b111) time += 4;
     
@@ -1620,7 +1742,7 @@ rootOps[0x10] = function(instruction, oldPc) {
     
     reg8[B] --;
     
-    if(reg[B] != 0) {
+    if(reg8[B] != 0) {
         time += 5;
         reg16[PC] += makeSigned(displacement, 1) + 2;
     }
@@ -1700,9 +1822,15 @@ parentOps[0xed][0x45] = function(instruction, oldPc) {
 };
 
 fillMask(0xc7, 0x38, rootOps, (instruction, oldPc) => {
-    log("> rst p");
+    time += 11;
     
-    console.error("[Z80] RST not yet implemented");
+    let t = instruction & 0b00111000;
+    log("> rst #$" + t.toString(16));
+    
+    reg16[SP] -= 2;
+    writeMemory16(reg16[SP], reg16[PC]);
+    
+    reg16[PC] = t;
 });
 
 

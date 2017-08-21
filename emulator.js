@@ -20,7 +20,7 @@ let log = function(msg) {
     }
 }
 
-export class Emulator {    
+export class Emulator {
     constructor(options) {
         this.options = options ? options : {};
         if(this.options.version === undefined) {
@@ -44,7 +44,7 @@ export class Emulator {
         this.z80 = new Z80(this);
         this.vdp = new Vdp(this);
         
-        this.m68kOwnBus = false;
+        this.busOwner = "m68k";
         
         this.ports = [new Gamepad3(65, 79, 69, 13), new Controller(), new Controller()];
         
@@ -53,23 +53,23 @@ export class Emulator {
     }
     
     loadRom(rom) {
-        this.rom = new DataView(rom);
+        let dv = new DataView(rom);
         
-        if(this.rom.getUint16(8) == 0xaabb) {
+        if(dv.getUint16(8) == 0xaabb) {
             console.log("This looks like a .smd file, let me decode it for you...");
             
-            let newBuff = new DataView(new ArrayBuffer(this.rom.byteLength - 512));
+            let newBuff = new DataView(new SharedArrayBuffer(dv.byteLength - 512));
             
-            for(let i = 512; i < this.rom.byteLength;) {
+            for(let i = 512; i < dv.byteLength;) {
                 let e = i - 512;
                 let o = i + 1 - 512;
                 
                 for(let j = 0; j < 16 * 1024; j ++) {
                     if(j < 8 * 1024) {
-                        newBuff.setUint8(o, this.rom.getUint8(i));
+                        newBuff.setUint8(o, dv.getUint8(i));
                         o += 2;
                     }else{
-                        newBuff.setUint8(e, this.rom.getUint8(i));
+                        newBuff.setUint8(e, dv.getUint8(i));
                         e += 2;
                     }
                     i ++;
@@ -77,7 +77,17 @@ export class Emulator {
             }
             
             this.rom = newBuff;
+        }else{
+            let newBuff = new DataView(new SharedArrayBuffer(dv.byteLength));
+            
+            for(let i = 0; i < dv.byteLength; i += 4) {
+                newBuff.setUint32(i, dv.getUint32(i));
+            }
+            
+            this.rom = newBuff;
         }
+        
+        this.z80.loadRom(this.rom);
     }
     
     readMemory(addr) {
@@ -95,7 +105,7 @@ export class Emulator {
         
         if(addr >= 0xa00000 && addr < 0xa10000) {
             // Z80 address space
-            this.z80.readMemory(addr);
+            return this.z80.readMemory(addr);
         }
         
         if(addr > 0xe00000) {
@@ -106,7 +116,7 @@ export class Emulator {
         switch(addr & ~1) {
             case 0xa11100:
                 // Z80 /BUSREQ
-                return (!this.m68kOwnBus || this.z80.reset) ? 0x1 : 0x0;
+                return (this.busOwner != "m68k" || this.z80.reset) ? 0x1 : 0x0;
             
             case 0xa10000:
                 // Version register
@@ -159,6 +169,7 @@ export class Emulator {
         if(addr >= 0xa00000 && addr < 0xa10000) {
             // Z80 address space
             this.z80.writeMemory(addr, value);
+            return;
         }
         
         // Memory IO
@@ -226,7 +237,7 @@ export class Emulator {
             return;
         }
         
-        //console.warn("Write to unknown memory address 0x"+addr.toString(16));
+        console.warn("Write to unknown memory address 0x"+addr.toString(16));
     }
     
     readMemory8(addr) {
@@ -242,6 +253,11 @@ export class Emulator {
             return this.mainRam.getUint8(addr & 0x00ffff, false);
         }
         
+        if(addr >= 0xa00000 && addr < 0xa10000) {
+            // Z80 address space
+            return this.z80.readMemory8(addr);
+        }
+        
         return this.readMemory(addr) & 0xff;
     }
     
@@ -251,6 +267,12 @@ export class Emulator {
         if(addr > 0xe00000) {
             // Main RAM
             this.mainRam.setUint8(addr & 0x00ffff, value, false);
+            return;
+        }
+        
+        if(addr >= 0xa00000 && addr < 0xa10000) {
+            // Z80 address space
+            this.z80.writeMemory8(addr, value);
             return;
         }
         
@@ -330,6 +352,7 @@ export class Emulator {
         
         while(this.m68k.time < this.time) {
             let ret = this.m68k.doInstruction();
+            this.z80.checkWorker();
             
             if(!ret) {
                 console.log("Emulator stopping...");
@@ -337,7 +360,7 @@ export class Emulator {
                 return;
             }
         }
-        this.m68k.updateSpans();
+        //this.m68k.updateSpans();
         
         requestAnimationFrame(this.runTime.bind(this, factor));
     }

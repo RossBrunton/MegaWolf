@@ -298,7 +298,7 @@ export class Vdp {
     handleFrame() {
         this.worker.postMessage([MSG_RAF, null]);
         
-        document.querySelector("#vram").getContext("2d").putImageData(this.dumpHScroll(), 0, 0);
+        //document.querySelector("#vram").getContext("2d").putImageData(this.dumpHScroll(), 0, 0);
     }
     
     interrupt() {

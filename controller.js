@@ -1,5 +1,12 @@
 "use strict";
 
+let DEBUG = false;
+let log = function(msg) {
+    if(DEBUG) {
+        console.log("[controller] " + msg);
+    }
+}
+
 export class Controller {
     constructor() {
         this.control = 0;
@@ -12,7 +19,7 @@ export class Controller {
     }
     
     writeControl(value, time) {
-        console.log("[controller] Control set to 0x" + value.toString(16));
+        log("Control set to 0x" + value.toString(16));
         this.control = value & 0x7f;
     }
     
