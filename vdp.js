@@ -13,8 +13,8 @@ const RPLANEB_NT = 4;
 const RSPRITE_NT = 5;
 const RSP_GEN = 6;
 const RBACKGROUND = 7;
-const RUNUSEDA = 8;
-const RUNUSEDB = 9;
+const RMSHORSCROLL = 8;
+const RMSVERSCROLL = 9;
 const RHORINT_C = 10;
 const RM3 = 11;
 const RM4 = 12;
@@ -141,15 +141,15 @@ export class Vdp {
             if(this.dblWord) {
                 // Second word
                 let cd = (value >>> 6) & 0b11;
-                this.registers[RCODE] = cd;
-                
-                this.addressTmp |= (value & 0x3f) << 8;
                 
                 if(cd == MS_REGS) {
                     // Write to a register
                     this.registers[value & 0xf] = this.addressTmp;
                 }else{
                     // Set the write address
+                    this.registers[RCODE] = cd;
+                    
+                    this.addressTmp |= (value & 0x3f) << 8;
                     this.address = this.addressTmp;
                 }
                 
@@ -194,7 +194,9 @@ export class Vdp {
             case VRAM_W: arr = this.vram; break;
             case CRAM_W: arr = this.cram; break;
             case VSRAM_W: arr = this.vsram; break;
-            default: return;
+            default: 
+                console.error("Unknown VDP write destination " + this.registers[RCODE]);
+                return;
         }
         
         arr.setUint16(this.address, value, false);
@@ -208,7 +210,9 @@ export class Vdp {
         switch(this.registers[RCODE] & 0b11) {
             case MS_VRAM: arr = this.vram; break;
             case MS_CRAM: arr = this.cram; break;
-            default: return;
+            default: 
+                console.error("Unknown VDP write destination " + this.registers[RCODE]);
+                return;
         }
         
         arr.setUint8(this.address, value);

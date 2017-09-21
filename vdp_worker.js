@@ -15,8 +15,8 @@ const RPLANEB_NT = 4;
 const RSPRITE_NT = 5;
 const RSP_GEN = 6;
 const RBACKGROUND = 7;
-const RUNUSEDA = 8;
-const RUNUSEDB = 9;
+const RMSHORSCROLL = 8;
+const RMSVERSCROLL = 9;
 const RHORINT_C = 10;
 const RM3 = 11;
 const RM4 = 12;
@@ -107,14 +107,17 @@ let getDisplayRows = function() {
 }
 
 let getPlaneCols = function() {
+    if(mode == MODE_MS) return 32;
     return [32, 64, 64, 128][registers[RPLANE_SIZE] & 0b11];
 }
 
 let getPlaneRows = function() {
+    if(mode == MODE_MS) return [28, 32, 32, 32][(registers[RM2] >> 3) & 0b11];
     return [32, 64, 64, 128][(registers[RPLANE_SIZE] >> 4) & 0b11];
 }
 
 let getVScroll = function(plane, col) {
+    if(mode == MODE_MS) return registers[RMSVERSCROLL];
     if(plane == S) return 0;
     
     switch((registers[RM3] >> 2) & 0b11) {
@@ -131,6 +134,7 @@ let getVScroll = function(plane, col) {
 
 let getHScroll = function(plane, line) {
     // TODO: Each individual scanline has its own offest, not the whole tile
+    if(mode == MODE_MS) return registers[RMSHORSCROLL];
     if(plane == S) return 0;
     if(line >= height) return 0;
     let base = registers[RHORSCROLL] << 10;
@@ -172,7 +176,9 @@ let raf = function() {
 // Gets a pointer to a cell for a given x, y cell on the given plane
 let getFromPlane = function(x, y, plane) {
     let base = 0;
-    if(plane == A) {
+    if(mode == MODE_MS) {
+        base = (registers[RPLANEA_NT] & 0x0e) << 10
+    }else if(plane == A) {
         base = (registers[RPLANEA_NT] & 0x38) << 10;
     }else{
         base = (registers[RPLANEB_NT] & 0x07) << 13;
@@ -253,19 +259,33 @@ let doFrame = function() {
     // Create a buffer of palette entries
     
     // And now the planes
-    // No priority:
-    first = true;
-    drawPlane((registers[RPLANEB_NT] & 0x07) << 13, false, composeBuffer, B); // B
-    first = false;
-    drawPlane((registers[RPLANEA_NT] & 0x38) << 10, false, composeBuffer, A); // A
-    drawSprites(registers[RSPRITE_NT] << 9, false, composeBuffer); // Sprites
-    // Window
-    
-    // Priority:
-    drawPlane((registers[RPLANEB_NT] & 0x07) << 13, true, composeBuffer, B); // B
-    drawPlane((registers[RPLANEA_NT] & 0x38) << 10, true, composeBuffer, A); // A
-    drawSprites(registers[RSPRITE_NT] << 9, true, composeBuffer); // Sprites
-    // Window
+    if(mode == MODE_MD) {
+        // No priority:
+        first = true;
+        drawPlane((registers[RPLANEB_NT] & 0x07) << 13, false, composeBuffer, B); // B
+        first = false;
+        drawPlane((registers[RPLANEA_NT] & 0x38) << 10, false, composeBuffer, A); // A
+        drawSprites(registers[RSPRITE_NT] << 9, false, composeBuffer); // Sprites
+        // Window
+        
+        // Priority:
+        drawPlane((registers[RPLANEB_NT] & 0x07) << 13, true, composeBuffer, B); // B
+        drawPlane((registers[RPLANEA_NT] & 0x38) << 10, true, composeBuffer, A); // A
+        drawSprites(registers[RSPRITE_NT] << 9, true, composeBuffer); // Sprites
+        // Window
+    }else{
+        // Master system
+        
+        // No priority
+        first = true;
+        drawPlane((registers[RPLANEA_NT] & 0x0e) << 10, false, composeBuffer, A); // Plane
+        first = false;
+        drawSprites(registers[RSPRITE_NT] << 9, false, composeBuffer); // Sprites
+        
+        // Priority
+        drawPlane((registers[RPLANEA_NT] & 0x0e) << 10, true, composeBuffer, A); // Plane
+        drawSprites(registers[RSPRITE_NT] << 9, true, composeBuffer); // Sprites
+    }
     
     // RENDER
     // Convert these palette entries to actual pixels
@@ -306,6 +326,7 @@ let drawSprites = function(start, priority, view) {
             let hsize = (vram.getUint16(start + 2, false) >> 10) & 0b11;
             let cell = (vram.getUint16(start + 4, false));
             
+            // TODO: MS Priority
             if(((cell & 0x8000) == 0x8000) == priority) {
                 // Priority is correct
                 let flipx = (cell & 0x0800) != 0;
@@ -348,6 +369,12 @@ let drawTile = function(cell, x, y, view, plane) {
     let ybase = y;
     let flipx = (cell & 0x0800) != 0;
     let flipy = (cell & 0x1000) != 0;
+    if(mode == MODE_MS) {
+        i &= 0x1ff;
+        flipx = (cell & 0x0200) != 0;
+        flipy = (cell & 0x0400) != 0;
+        pmask = (cell >>> 5) & 0x0010;
+    }
     
     for(let ys = 0; ys < 8; ys ++) {
         for(let xs = 0; xs < 8; xs ++) {

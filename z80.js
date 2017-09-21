@@ -17,6 +17,7 @@ const SHM_IO = 0;
 const SHM_DATA = 1;
 const SHM_ADDR = 2;
 const SHM_BANK = 3; // Memory bank, converted such that it can just be ORed with the access
+const SHM_INT = 4; // Interrupt
 
 // Memory bus: SHM_IO is set by the worker depending on the operation, which is then cleared by the main Z80 class
 // These are always z80 addresses, and always 8 bit read/writes
@@ -25,6 +26,7 @@ const MEM_READ = 1;
 const MEM_WRITE = 2;
 const MEM_IOREAD = 3;
 const MEM_IOWRITE = 4;
+const MEM_ICLR = 5; // Interrupt clear
 
 let u8 = new Uint8Array(1);
 let u16 = new Uint16Array(1);
@@ -43,7 +45,7 @@ export class Z80 {
         
         this.worker = new Worker("./z80_worker.js", {"type":"module"});
         
-        this.sharedBuff = new SharedArrayBuffer(4 * 4);
+        this.sharedBuff = new SharedArrayBuffer(5 * 4);
         this.shared = new Int32Array(this.sharedBuff);
         
         this.ramBuff = new SharedArrayBuffer(8 * 1024);
@@ -171,12 +173,19 @@ export class Z80 {
             return this.emu.vdp.readHvCount() >>> 8;
         }
         
+        if(p == 0xbf) {
+            // VDP status
+            // TODO: Bit 6 should be H interrupt
+            return this.emu.vdp.readControl() & 0xff;
+        }
+        
         if(p == 0x7f) {
             // H Counter
             return this.emu.vdp.readHvCount() & 0xff;
         }
         
         console.warn("Unknown port read " + p.toString(16));
+        return 0;
     }
     
     _portOut(p, val) {
@@ -192,10 +201,21 @@ export class Z80 {
             return;
         }
         
+        if(p == 0x7e || p == 0x7f) {
+            // Sound Chip
+            // TODO: this
+            return;
+        }
+        
         console.warn("Unknown port write " + p.toString(16) + " : " + val.toString(16));
     }
     
     checkWorker() {
+        if(this.emu.vdp.interrupt()) {
+            // TODO: This likely doesn't work in mega drive mode
+            this.shared[SHM_INT] = this.emu.vdp.interrupt();
+        }
+        
         let io = Atomics.load(this.shared, SHM_IO);
         if(io) {
             if(io == MEM_READ) {
@@ -206,6 +226,9 @@ export class Z80 {
                 Atomics.store(this.shared, SHM_DATA, this._portIn(Atomics.load(this.shared, SHM_ADDR)));
             }else if(io == MEM_IOWRITE) {
                 this._portOut(Atomics.load(this.shared, SHM_ADDR), Atomics.load(this.shared, SHM_DATA));
+            }else if(io == MEM_ICLR) {
+                this.shared[SHM_INT] = 0;
+                if(this.emu.mode == "ms") this.emu.vdp.clearInterrupt();
             }
             Atomics.store(this.shared, SHM_IO, 0);
             Atomics.wake(this.shared, SHM_IO);

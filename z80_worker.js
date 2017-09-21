@@ -17,12 +17,14 @@ const SHM_IO = 0;
 const SHM_DATA = 1;
 const SHM_ADDR = 2;
 const SHM_BANK = 3; // Memory bank, converted such that it can just be ORed with the access
+const SHM_INT = 4; // Interrupt
 
 const MEM_NONE = 0; // Memory bus: SHM_IO is set by the worker depending on the operation, which is then cleared by the
 const MEM_READ = 1; //  main Z80 class
 const MEM_WRITE = 2;
 const MEM_IOREAD = 3;
 const MEM_IOWRITE = 4;
+const MEM_ICLR = 5;
 
 const MODE_MD = "md"; // Mega drive
 const MODE_MS = "ms"; // Master system
@@ -63,15 +65,20 @@ let HL = 0b10;
 let AF = 0b11;
 
 let IM0 = 0b00;
-let IM1 = 0b10;
-let IM2 = 0b11;
+let IM1 = 0b01;
+let IM2 = 0b10;
 
 let logp = 0;
 let logEntries = [];
-let memLogEntries = new Uint8Array(501);
 let memLogP = 0;
 const DEBUG = false;
 const LOGGING = true;
+const LOG_ENTRIES = 500;
+const TRACE_STATE = true;
+let memLogEntries = new Uint8Array(LOG_ENTRIES + 1);
+let state = new Uint8Array(0b10010);
+let state16 = new Uint16Array(0b100);
+let heat = {};
 let log = function(msg) {
     if(DEBUG) {
         console.log("[Z80_w] " + msg);
@@ -79,14 +86,42 @@ let log = function(msg) {
     
     if(!LOGGING) return;
     logp += 1;
-    logp %= 500;
+    logp %= LOG_ENTRIES;
     logEntries[logp] = msg;
 };
+
+const TRACE_STACK = true;
+let stack = new Uint16Array(500);
+let stackP = 0;
+let addStack = (() => {});
+let popStack = (() => {});
+if(TRACE_STACK) {
+    addStack = function(addr) {
+        stack[stackP ++] = addr;
+    }
+
+    popStack = function() {
+        stackP --;
+    }
+}
+
+let dumpStack = function() {
+    for(let x = 0; x < stackP; x ++) {
+        console.log("> 0x" + stack[x].toString(16));
+    }
+}
+
+let markHeat = function(opcode) {
+    if(!LOGGING) return;
+    
+    if(!(opcode in heat)) heat[opcode] = 0;
+    heat[opcode] ++;
+}
 
 let memLog = function(mem) {
     if(!LOGGING) return;
     memLogP += 1;
-    memLogP %= 500;
+    memLogP %= LOG_ENTRIES;
     memLogEntries[memLogP] = mem;
 };
 
@@ -94,7 +129,7 @@ let dumpLog = function() {
     if(!LOGGING) {
         console.log("Logging disabled...");
     }else{
-        for(let i = logp; (i != logp +1) && !(logp == 500 && i == 0); (i != 0) ? i -- : i = 500) {
+        for(let i = logp; (i != logp +1) && !(logp == LOG_ENTRIES && i == 0); (i != 0) ? i -- : i = LOG_ENTRIES) {
             console.log(logEntries[i]);
         }
     }
@@ -105,7 +140,8 @@ let dumpMemLog = function() {
         console.log("Logging disabled...");
     }else{
         let ostr = "";
-        for(let i = memLogP; (i != memLogP +1) && !(memLogP == 500 && i == 0); (i != 0) ? i -- : i = 500) {
+        for(let i = memLogP; (i != memLogP +1) && !(memLogP == LOG_ENTRIES && i == 0);
+            (i != 0) ? i -- : i = LOG_ENTRIES) {
             ostr = (memLogEntries[i] <= 0xf ? "0" : "") + memLogEntries[i].toString(16) + " " + ostr;
         }
         return ostr;
@@ -129,6 +165,7 @@ let isNegative = function(val, length) {
 
 let makeSigned = function(val, length) {
     if(val < 0) return val;
+    val &= lengthMask(length);
     
     if(length == 1) {
         return (val & 0x80) ? val - 0xff - 1 : val;
@@ -157,6 +194,7 @@ let lengthMask = function(length) {
             return 0xffffffff;
         default:
             console.error("Unkown length value "+length+" for lengthMask");
+            return 0x0;
     }
 };
 
@@ -168,7 +206,11 @@ let subCf = function(a, b, length, pv, withCarry) { // a - b
     if(res > a) f |= FC;
     f |= FN;
     // TODO: PV properly
-    f |= pv ? FPV : 0;
+    if(pv === 2) {
+        f |= pv ? FPV : 0;
+    }else{
+        // Calculate
+    }
     if((res & 0xf) > (a & 0xf)) f |= FH;
     if(res == 0) f |= FZ;
     if(isNegative(res, length)) f |= FS;
@@ -226,7 +268,30 @@ let regString = function(r) {
 
 let regPairString = function(p, af) {
     return ["BC", "DE", "HL", !af ? "SP" : "AF"][p];
-}
+};
+
+let reg16String = function(p) {
+    return ["IX", "IY", "SP", "PC"][p];
+};
+
+let flagStr = function(f) {
+    let str = "";
+    str += (f & FS) ? "S" : "-";
+    str += (f & FZ) ? "Z" : "-";
+    str += (f & FH) ? "H" : "-";
+    str += (f & FPV) ? "V" : "-";
+    str += (f & FN) ? "N" : "-";
+    str += (f & FC) ? "C" : "-";
+    return str;
+};
+
+let printHeat = function() {
+    let results = Object.entries(heat).sort((a, b) => b[1] - a[1]);
+    
+    for(let [op, heat] of results) {
+        if(heat) console.log("%s: "+heat, op.toString(16));
+    }
+};
 
 self.onmessage = function(e) {
     let data = e.data[1];
@@ -246,6 +311,7 @@ self.onmessage = function(e) {
                 // In SMS mode, we cannot be stopped and always have the bus
                 stopped = false;
                 hasBus = true;
+                reset(0x0000);
             }
             break;
         
@@ -293,8 +359,11 @@ let crashed = false;
 let halted = false;
 let iff1 = 0; // Interupt flip flops
 let iff2 = 0;
+let interruptCooldown = 0; // Interrupts may not arrive until the instruction after the ei one
 let intMode = IM0; // Interrupt mode
 let mode = MODE_MD;
+
+let msBanks = [0x0, 0x0, 0x0]; // Master system bank numbers, ready for oring with addresses
 
 let reg8 = new Uint8Array(R + 1);
 let reg16 = new Uint16Array(PC + 1);
@@ -321,6 +390,22 @@ let doFrame = function(factor) {
     }
 };
 
+let romOffset = function(addr) {
+    if(addr < 0x400) {
+        // Unpaged
+        return addr;
+    }else if(addr < 0x4000) {
+        // Page 0
+        return msBanks[0] | (addr & 0x3fff);
+    }else if(addr < 0x8000) {
+        // Page 1
+        return msBanks[1] | (addr & 0x3fff);
+    }else{
+        // Page 2
+        return msBanks[2] | (addr & 0x3fff);
+    }
+}
+
 let readMemory8 = function(i) {
     if(mode == MODE_MD) {
         if(i < 0x4000) {
@@ -334,16 +419,29 @@ let readMemory8 = function(i) {
         Atomics.wait(shared, SHM_IO, MEM_READ);
         return shared[SHM_DATA];
     }else{
-        if(i < 0xbfff) {
+        if(i < 0xc000) {
             // ROM
-            return rom.getUint8(i);
+            return rom.getUint8(romOffset(i));
         }
         
-        if(i >= 0xc000) {
+        if(i >= 0xc000 && i < 0xfff0) {
             // RAM
             i &= 0x1fff;
             return ram.getUint8(i);
         }
+        
+        if(i == 0xfffc) {
+            // Mapper settings
+            // TODO: this
+            console.warn("Read from mapper settings");
+            return 0;
+        }
+        
+        if(i >= 0xfffd) {
+            return msBanks[i - 0xfffd] >>> 14;
+        }
+        
+        console.warn("Read from unknown address " + i.toString(16));
     }
 };
 
@@ -357,16 +455,18 @@ let readMemory16 = function(i) {
         
         return (readMemory8(i + 1) << 8) | readMemory8(i);
     }else{
-        if(i < 0xbfff) {
+        if(i < 0xc000) {
             // ROM
-            return rom.getUint16(i, true);
+            return rom.getUint16(romOffset(i), true);
         }
         
-        if(i >= 0xc000) {
+        if(i >= 0xc000 && i < 0xfff0) {
             // RAM
             i &= 0x1fff;
             return ram.getUint16(i, true);
         }
+        
+        console.warn("Read from unknown address " + i.toString(16));
     }
 };
 
@@ -392,18 +492,33 @@ let writeMemory8 = function(i, val) {
         Atomics.store(shared, SHM_IO, MEM_WRITE);
         Atomics.wait(shared, SHM_IO, MEM_WRITE);
     }else{
-        if(i < 0xbfff) {
+        if(i < 0xc000) {
             // ROM
             console.error("Attempted ROM write at " + i.toString(16));
             return;
         }
         
-        if(i >= 0xc000) {
+        if(i >= 0xc000 && i < 0xfff0) {
             // RAM
             i &= 0x1fff;
+            if(i > reg16[SP] + 2 && reg16[SP]) debugger;
             ram.setUint8(i, val);
             return;
         }
+        
+        if(i == 0xfffc) {
+            // Mapper settings
+            // TODO: this
+            console.warn("Write to mapper settings");
+            return;
+        }
+        
+        if(i >= 0xfffd) {
+            msBanks[i - 0xfffd] = (val & 0xf) << 14;
+            return;
+        }
+        
+        console.warn("Write to unknown address " + i.toString(16));
     }
 };
 
@@ -427,12 +542,15 @@ let writeMemory16 = function(i, val) {
             return;
         }
         
-        if(i >= 0xc000) {
+        if(i >= 0xc000 && i < 0xfff0) {
             // RAM
             i &= 0x1fff;
+            if(i > reg16[SP] + 2 && reg16[SP]) debugger;
             ram.setUint16(i, val, true);
             return;
         }
+        
+        console.warn("Write to unknown address " + i.toString(16));
     }
 };
 
@@ -508,6 +626,7 @@ let reset = function(entry) {
     iff1 = 0;
     iff2 = 0;
     reg16[PC] = entry;
+    msBanks = [0x0000, 0x4000, 0x8000];
 };
 
 let portIn = function(port) {
@@ -525,6 +644,32 @@ let portOut = function(port, value) {
     Atomics.wait(shared, SHM_IO, MEM_IOWRITE);
 };
 
+let interrupt = function() {
+    log(" ---- Got Interrupt ----");
+    
+    switch(intMode) {
+        case IM0:
+            console.log("IM0 not supported yet");
+            break;
+        
+        case IM1:
+            // Restart
+            reg16[SP] -= 2;
+            writeMemory16(reg16[SP], reg16[PC]);
+            addStack(reg16[PC]);
+            
+            reg16[PC] = 0x38;
+            break;
+        
+        case IM2:
+            console.log("IM2 not supported yet");
+            break;
+        
+        default:
+            console.error("Unknown interrupt mode " + intMode);
+    }
+}
+
 let doInstruction = function() {
     // Get the first word of the opcode
     let oldPc = reg16[PC];
@@ -532,6 +677,41 @@ let doInstruction = function() {
     
     // Clear indirect options
     indirect = 0b111;
+    indirectDispSet = false;
+    
+    // System state
+    if(TRACE_STATE) {
+        for(let i = 0; i < reg8.length; i ++) {
+            if(state[i] != reg8[i]) {
+                if(i == F) {
+                    log("["+regString(i)+"] "+flagStr(state[i])+" -> "+flagStr(reg8[i]));
+                }else{
+                    log("["+regString(i)+"] 0x"+state[i].toString(16)+" -> 0x"+reg8[i].toString(16));
+                }
+                state[i] = reg8[i];
+            }
+        }
+        
+        for(let i = 0; i < reg16.length; i ++) {
+            if(state16[i] != reg16[i]) {
+                log("["+reg16String(i)+"] 0x"+state16[i].toString(16)+" -> 0x"+reg16[i].toString(16));
+                state16[i] = reg16[i];
+            }
+        }
+    }
+    
+    // Check for interrupts
+    // (DI (0xf3) disables interrupts during its execution)
+    if(shared[SHM_INT] && !interruptCooldown && iff1 && first != 0xf3) {
+        Atomics.store(shared, SHM_IO, MEM_ICLR);
+        Atomics.wait(shared, SHM_IO, MEM_ICLR);
+        
+        reg16[PC] = oldPc;
+        interrupt();
+        return;
+    }else if(interruptCooldown) {
+        interruptCooldown --;
+    }
     
     // Set indirect
     if(first == 0xdd) {
@@ -548,6 +728,8 @@ let doInstruction = function() {
         log("Running instruction 0x"+first.toString(16)+" at 0x"+oldPc.toString(16));
         rootOps[first](first, oldPc);
     }else if(first in parentOps) {
+        // Now the indirect (if set) comes
+        getIndirectDisplacement();
         let second = pcAndAdvance(1);
         if(second in parentOps[first]) {
             log("Running instruction 0x"+first.toString(16)+":"+second.toString(16)+" at 0x"+oldPc.toString(16));
@@ -574,7 +756,10 @@ let fillMask = function(val, mask, parent, fn) { // Fill all possible values of 
     }
     
     // Now populate the parent
-    opts.forEach(x => parent[x] = fn);
+    opts.forEach(x => {
+        if(parent[x]) console.error("Clobber on opcode address 0x" + x.toString(16));
+        parent[x] = fn;
+    });
 };
 
 // Opcodes
@@ -590,6 +775,8 @@ let rootOps = {};
 // Indirects: Some instructions use HL, IX or IY depending on the first word of the instruction, this handles all three
 //  at once as part of the instruction decoding
 let indirect = 0b111; // IX, IY or 0b111 (to indicate none)
+let indirectDisp = 0;
+let indirectDispSet = false;
 let getIndirect = function() {
     if(indirect == 0b111) {
         return getRegPair(HL);
@@ -610,7 +797,11 @@ let getIndirectDisplacement = function() {
     if(indirect == 0b111) {
         return 0;
     }else{
-        return pcAndAdvance(1);
+        if(!indirectDispSet) {
+            indirectDisp = makeSigned(pcAndAdvance(1), 1);
+            indirectDispSet = true;
+        }
+        return indirectDisp;
     }
 };
 
@@ -625,6 +816,7 @@ let indirectString = function() {
 
 fillMask(0x40, 0x3f, rootOps, (instruction, oldPc) => {
     time += 4;
+    markHeat("ld");
     
     let dest = (instruction >> 3) & 0b111;
     let src = instruction & 0b111;
@@ -643,6 +835,7 @@ fillMask(0x40, 0x3f, rootOps, (instruction, oldPc) => {
 
 fillMask(0x06, 0x38, rootOps, (instruction, oldPc) => {
     log("> ld r,n");
+    markHeat("ld");
     time += 7;
     
     let dest = (instruction >> 3) & 0b111;
@@ -653,7 +846,9 @@ fillMask(0x06, 0x38, rootOps, (instruction, oldPc) => {
 
 rootOps[0x36] = function(instruction, oldPc) {
     time += 10;
+    markHeat("ld");
     
+    getIndirectDisplacement();
     let n = pcAndAdvance(1);
     log("> ld (" + indirectString() +" + d),#$" + n.toString(16));
     
@@ -663,6 +858,7 @@ rootOps[0x36] = function(instruction, oldPc) {
 rootOps[0x0a] = function(instruction, oldPc) {
     log("> ld a,(bc)");
     time += 7;
+    markHeat("ld");
     
     reg8[A] = readMemory8(getRegPair(BC));
 };
@@ -670,6 +866,7 @@ rootOps[0x0a] = function(instruction, oldPc) {
 rootOps[0x1a] = function(instruction, oldPc) {
     log("> ld a,(de)");
     time += 7;
+    markHeat("ld");
     
     reg8[A] = readMemory8(getRegPair(DE));
 };
@@ -677,6 +874,7 @@ rootOps[0x1a] = function(instruction, oldPc) {
 rootOps[0x3a] = function(instruction, oldPc) {
     log("> ld a,(nn)");
     time += 13;
+    markHeat("ld");
     
     let n = pcAndAdvance(2);
     
@@ -686,6 +884,7 @@ rootOps[0x3a] = function(instruction, oldPc) {
 rootOps[0x02] = function(instruction, oldPc) {
     log("> ld (bc),a");
     time += 7;
+    markHeat("ld");
     
     writeMemory8(getRegPair(BC), reg8[A]);
 };
@@ -693,12 +892,14 @@ rootOps[0x02] = function(instruction, oldPc) {
 rootOps[0x12] = function(instruction, oldPc) {
     log("> ld (de),a");
     time += 7;
+    markHeat("ld");
     
     writeMemory8(getRegPair(DE), reg8[A]);
 };
 
 rootOps[0x32] = function(instruction, oldPc) {
     time += 13;
+    markHeat("ld");
     
     let n = pcAndAdvance(2);
     log("> ld ($#" + n.toString(16) + "),A");
@@ -709,32 +910,35 @@ rootOps[0x32] = function(instruction, oldPc) {
 parentOps[0xed][0x57] = function(instruction, oldPc) {
     log("> ld A,I");
     time += 9;
+    markHeat("ld");
     
     reg8[A] = reg8[I];
     
     let f = reg8[F] & FC;
     if(!reg8[I]) f |= FZ;
     if(isNegative(reg8[I], 1)) f |= FS;
-    // TODO: PV flag
+    if(iff2) f |= FPV;
     reg8[F] = f;
 };
 
 parentOps[0xed][0x5f] = function(instruction, oldPc) {
     log("> ld A,R");
     time += 9;
+    markHeat("ld");
     
     reg8[A] = reg8[R];
     
     let f = reg8[F] & FC;
     if(!reg8[R]) f |= FZ;
     if(isNegative(reg8[R], 1)) f |= FS;
-    // TODO: PV flag
+    if(iff2) f |= FPV;
     reg8[F] = f;
 };
 
 parentOps[0xed][0x47] = function(instruction, oldPc) {
     log("> ld I,A");
     time += 9;
+    markHeat("ld");
     
     reg8[I] = reg8[A];
 };
@@ -752,6 +956,7 @@ parentOps[0xed][0x4f] = function(instruction, oldPc) {
 
 fillMask(0x01, 0x30, rootOps, (instruction, oldPc) => {
     time += 10;
+    markHeat("ld(16)");
     
     let dest = (instruction >> 4) & 0b11;
     let n = pcAndAdvance(2);
@@ -768,6 +973,7 @@ fillMask(0x01, 0x30, rootOps, (instruction, oldPc) => {
 
 rootOps[0x2a] = function(instruction, oldPc) {
     time += 16;
+    markHeat("ld(16)");
     
     let n = pcAndAdvance(2);
     
@@ -783,6 +989,7 @@ rootOps[0x2a] = function(instruction, oldPc) {
 
 fillMask(0x4b, 0x30, parentOps[0xed], (instruction, oldPc) => {
     time += 20;
+    markHeat("ld(16)");
     
     let dest = (instruction >> 4) & 0b11;
     let n = pcAndAdvance(2);
@@ -793,6 +1000,7 @@ fillMask(0x4b, 0x30, parentOps[0xed], (instruction, oldPc) => {
 
 rootOps[0x22] = function(instruction, oldPc) {
     time += 16;
+    markHeat("ld(16)");
     
     let n = pcAndAdvance(2);
     
@@ -807,6 +1015,7 @@ rootOps[0x22] = function(instruction, oldPc) {
 
 fillMask(0x43, 0x30, parentOps[0xed], (instruction, oldPc) => {
     time += 20;
+    markHeat("ld(16)");
     
     let src = (instruction >> 4) & 0b11;
     let n = pcAndAdvance(2);
@@ -817,6 +1026,7 @@ fillMask(0x43, 0x30, parentOps[0xed], (instruction, oldPc) => {
 
 rootOps[0xf9] = function(instruction, oldPc) {
     time += 6;
+    markHeat("ld(16)");
     
     log("> ld SP," + indirectString());
     if(indirect != 0b111) {
@@ -829,6 +1039,7 @@ rootOps[0xf9] = function(instruction, oldPc) {
 
 fillMask(0xc5, 0x30, rootOps, (instruction, oldPc) => {
     time += 11;
+    markHeat("push");
     
     let q = (instruction >> 4) & 0b11;
     let val = 0;
@@ -848,6 +1059,7 @@ fillMask(0xc5, 0x30, rootOps, (instruction, oldPc) => {
 
 fillMask(0xc1, 0x30, rootOps, (instruction, oldPc) => {
     time += 10;
+    markHeat("pop");
     
     let q = (instruction >> 4) & 0b11;
     let val = readMemory16(reg16[SP]);
@@ -869,6 +1081,7 @@ fillMask(0xc1, 0x30, rootOps, (instruction, oldPc) => {
 // ----
 rootOps[0xeb] = function(instruction, oldPc) {
     log("> ex DE,HL");
+    markHeat("ex");
     time += 4;
     
     let tmp = getRegPair(DE);
@@ -879,6 +1092,7 @@ rootOps[0xeb] = function(instruction, oldPc) {
 rootOps[0x08] = function(instruction, oldPc) {
     log("> ex AF,AF'");
     time += 4;
+    markHeat("ex");
     
     for(let r of [A, F]) {
         let tmp = reg8[r];
@@ -890,6 +1104,7 @@ rootOps[0x08] = function(instruction, oldPc) {
 rootOps[0xd9] = function(instruction, oldPc) {
     log("> exx");
     time += 4;
+    markHeat("exx");
     
     for(let r of [B, C, D, E, H, L]) {
         let tmp = reg8[r];
@@ -900,8 +1115,9 @@ rootOps[0xd9] = function(instruction, oldPc) {
 
 rootOps[0xe3] = function(instruction, oldPc) {
     time += 19;
+    markHeat("ex");
     
-    if(immediate != 0b111) {
+    if(indirect != 0b111) {
         log("> ex (sp),I*");
         time += 4;
         let tmp = reg16[indirect];
@@ -917,6 +1133,7 @@ rootOps[0xe3] = function(instruction, oldPc) {
 
 parentOps[0xed][0xa0] = function(instruction, oldPc) {
     time += 16;
+    markHeat("ldi");
     
     log("> ldi");
     writeMemory8(getRegPair(DE), readMemory8(getRegPair(HL)));
@@ -931,6 +1148,7 @@ parentOps[0xed][0xa0] = function(instruction, oldPc) {
 
 parentOps[0xed][0xb0] = function(instruction, oldPc) {
     log("> ldir");
+    markHeat("ldir");
     parentOps[0xed][0xa0](instruction, oldPc); // Call the ldi instruction
     
     // Check its flags
@@ -942,6 +1160,7 @@ parentOps[0xed][0xb0] = function(instruction, oldPc) {
 
 parentOps[0xed][0xa8] = function(instruction, oldPc) {
     time += 16;
+    markHeat("ldd");
     
     log("> ldd");
     writeMemory8(getRegPair(DE), readMemory8(getRegPair(HL)));
@@ -956,6 +1175,7 @@ parentOps[0xed][0xa8] = function(instruction, oldPc) {
 
 parentOps[0xed][0xb8] = function(instruction, oldPc) {
     log("> lddr");
+    markHeat("lddr");
     parentOps[0xed][0xa8](instruction, oldPc); // Call the ldd instruction
     
     // Check its flags
@@ -967,6 +1187,7 @@ parentOps[0xed][0xb8] = function(instruction, oldPc) {
 
 parentOps[0xed][0xa1] = function(instruction, oldPc) {
     time += 16;
+    markHeat("cpi");
     
     log("> cpi");
     let val = readMemory8(getRegPair(HL));
@@ -978,10 +1199,11 @@ parentOps[0xed][0xa1] = function(instruction, oldPc) {
 
 parentOps[0xed][0xb1] = function(instruction, oldPc) {
     log("> cpir");
+    markHeat("cpir");
     parentOps[0xed][0xa1](instruction, oldPc); // Call the cpi instruction
     
     // Check its flags
-    if((reg8[F] & FPV) || (reg8[Z] & FZ)) {
+    if((reg8[F] & FPV) && !(reg8[Z] & FZ)) {
         time += 5;
         reg16[PC] -= 2;
     }
@@ -989,6 +1211,7 @@ parentOps[0xed][0xb1] = function(instruction, oldPc) {
 
 parentOps[0xed][0xa9] = function(instruction, oldPc) {
     time += 16;
+    markHeat("cpd");
     
     log("> cpd");
     let val = readMemory8(getRegPair(HL));
@@ -1000,10 +1223,11 @@ parentOps[0xed][0xa9] = function(instruction, oldPc) {
 
 parentOps[0xed][0xb9] = function(instruction, oldPc) {
     log("> cpdr");
+    markHeat("cpdr");
     parentOps[0xed][0xa9](instruction, oldPc); // Call the cpi instruction
     
     // Check its flags
-    if((reg8[F] & FPV) || (reg8[Z] & FZ)) {
+    if((reg8[F] & FPV) && !(reg8[Z] & FZ)) {
         time += 5;
         reg16[PC] -= 2;
     }
@@ -1029,6 +1253,7 @@ let getArg = function(instruction, opName) {
 
 fillMask(0x80, 0x07, rootOps, (instruction, oldPc) => {
     time += 4;
+    markHeat("add");
     
     let val = getArg(instruction, "add");
     
@@ -1039,6 +1264,7 @@ fillMask(0x80, 0x07, rootOps, (instruction, oldPc) => {
 rootOps[0xc6] = function(instruction, oldPc) {
     log("> add a,n");
     time += 7;
+    markHeat("add");
     
     let val = pcAndAdvance(1);
     
@@ -1048,27 +1274,32 @@ rootOps[0xc6] = function(instruction, oldPc) {
 
 fillMask(0x88, 0x07, rootOps, (instruction, oldPc) => {
     time += 4;
+    markHeat("adc");
     
     let val = getArg(instruction, "adc");
+    let c = reg8[F] & FC;
     
     reg8[F] = addCf(val, reg8[A], 1, false);
     reg8[A] += val;
-    if(reg8[F] & FC) reg8[A] ++;
+    if(c) reg8[A] ++;
 });
 
 rootOps[0xce] = function(instruction, oldPc) {
     log("> adc a,n");
     time += 7;
+    markHeat("adc");
     
     let val = pcAndAdvance(1);
+    let c = reg8[F] & FC;
     
     reg8[F] = addCf(val, reg8[A], 1, true);
     reg8[A] += val;
-    if(reg8[F] & FC) reg8[A] ++;
+    if(c) reg8[A] ++;
 };
 
 fillMask(0x90, 0x07, rootOps, (instruction, oldPc) => {
     time += 4;
+    markHeat("sub");
     
     let val = getArg(instruction, "sub");
     
@@ -1079,6 +1310,7 @@ fillMask(0x90, 0x07, rootOps, (instruction, oldPc) => {
 rootOps[0xd6] = function(instruction, oldPc) {
     log("> sub a,n");
     time += 7;
+    markHeat("sub");
     
     let val = pcAndAdvance(1);
     
@@ -1088,33 +1320,38 @@ rootOps[0xd6] = function(instruction, oldPc) {
 
 fillMask(0x98, 0x07, rootOps, (instruction, oldPc) => {
     time += 4;
+    markHeat("sbc");
     
     let val = getArg(instruction, "sbc");
+    let c = reg8[F] & FC;
     
     reg8[F] = subCf(reg8[A], val, 1, 2, true);
     reg8[A] -= val;
-    if(reg8[F] & FC) reg8[A] --;
+    if(c) reg8[A] --;
 });
 
 rootOps[0xde] = function(instruction, oldPc) {
     log("> sbc a,n");
     time += 7;
+    markHeat("sbc");
     
     let val = pcAndAdvance(1);
+    let c = reg8[F] & FC;
     
     reg8[F] = subCf(reg8[A], val, 1, 2, true);
     reg8[A] -= val;
-    if(reg8[F] & FC) reg8[A] --;
+    if(c) reg8[A] --;
 };
 
 fillMask(0xa0, 0x07, rootOps, (instruction, oldPc) => {
     time += 4;
+    markHeat("and");
     
     let val = getArg(instruction, "and");
     reg8[A] &= val;
     
     let f = FH;
-    if(isNegative(reg8[A], 1)) f |= FN;
+    if(isNegative(reg8[A], 1)) f |= FS;
     if(!reg8[A]) f |= FZ;
     // TODO: PV flag
     reg8[F] = f;
@@ -1122,13 +1359,14 @@ fillMask(0xa0, 0x07, rootOps, (instruction, oldPc) => {
 
 rootOps[0xe6] = function(instruction, oldPc) {
     time += 7;
+    markHeat("and");
     
     let val = pcAndAdvance(1);
     reg8[A] &= val;
     log("> and A,#$" + val.toString(16));
     
     let f = FH;
-    if(isNegative(reg8[A], 1)) f |= FN;
+    if(isNegative(reg8[A], 1)) f |= FS;
     if(!reg8[A]) f |= FZ;
     // TODO: PV flag
     reg8[F] = f;
@@ -1136,12 +1374,13 @@ rootOps[0xe6] = function(instruction, oldPc) {
 
 fillMask(0xb0, 0x07, rootOps, (instruction, oldPc) => {
     time += 4;
+    markHeat("or");
     
     let val = getArg(instruction, "or");
     reg8[A] |= val;
     
     let f = FH;
-    if(isNegative(reg8[A], 1)) f |= FN;
+    if(isNegative(reg8[A], 1)) f |= FS;
     if(!reg8[A]) f |= FZ;
     // TODO: PV flag
     reg8[F] = f;
@@ -1149,6 +1388,7 @@ fillMask(0xb0, 0x07, rootOps, (instruction, oldPc) => {
 
 rootOps[0xf6] = function(instruction, oldPc) {
     time += 7;
+    markHeat("or");
     
     let val = pcAndAdvance(1);
     reg8[A] |= val;
@@ -1156,7 +1396,7 @@ rootOps[0xf6] = function(instruction, oldPc) {
     log("> or A,#$" + val.toString(16));
     
     let f = 0;
-    if(isNegative(reg8[A], 1)) f |= FN;
+    if(isNegative(reg8[A], 1)) f |= FS;
     if(!reg8[A]) f |= FZ;
     // TODO: PV flag
     reg8[F] = f;
@@ -1164,19 +1404,21 @@ rootOps[0xf6] = function(instruction, oldPc) {
 
 fillMask(0xaf, 0x07, rootOps, (instruction, oldPc) => {
     time += 4;
+    markHeat("xor");
     
     let val = getArg(instruction, "xor");
     reg8[A] ^= val;
     
     let f = FH;
-    if(isNegative(reg8[A], 1)) f |= FN;
+    if(isNegative(reg8[A], 1)) f |= FS;
     if(!reg8[A]) f |= FZ;
-    // TODO: PV flag
+    if(parity(reg8[A], 1)) f |= FPV;
     reg8[F] = f;
 });
 
 rootOps[0xee] = function(instruction, oldPc) {
     time += 7;
+    markHeat("xor");
     
     let val = pcAndAdvance(1);
     reg8[A] ^= val;
@@ -1184,14 +1426,15 @@ rootOps[0xee] = function(instruction, oldPc) {
     log("> xor A,#$" + val.toString(16));
     
     let f = 0;
-    if(isNegative(reg8[A], 1)) f |= FN;
+    if(isNegative(reg8[A], 1)) f |= FS;
     if(!reg8[A]) f |= FZ;
-    // TODO: PV flag
+    if(parity(reg8[A], 1)) f |= FPV;
     reg8[F] = f;
 };
 
 fillMask(0xbf, 0x07, rootOps, (instruction, oldPc) => {
     time += 4;
+    markHeat("cp");
     
     let val = getArg(instruction, "cp");
     
@@ -1200,6 +1443,7 @@ fillMask(0xbf, 0x07, rootOps, (instruction, oldPc) => {
 
 rootOps[0xfe] = function(instruction, oldPc) {
     time += 7;
+    markHeat("cp");
     
     let val = pcAndAdvance(1);
     log("> cp A,#$" + val.toString(16));
@@ -1209,6 +1453,7 @@ rootOps[0xfe] = function(instruction, oldPc) {
 
 fillMask(0x04, 0x38, rootOps, (instruction, oldPc) => {
     time += 4;
+    markHeat("inc");
     
     let src = (instruction >> 3) & 0b111;
     let val = 0;
@@ -1230,6 +1475,7 @@ fillMask(0x04, 0x38, rootOps, (instruction, oldPc) => {
 
 fillMask(0x05, 0x38, rootOps, (instruction, oldPc) => {
     time += 4;
+    markHeat("dec");
     
     let src = (instruction >> 3) & 0b111;
     let val = 0;
@@ -1256,6 +1502,7 @@ fillMask(0x05, 0x38, rootOps, (instruction, oldPc) => {
 
 rootOps[0x27] = function(instruction, oldPc) {
     log("> daa");
+    markHeat("daa");
     console.error("[Z80_w] daa operator not implemented yet.");
     crashed = true;
 };
@@ -1263,6 +1510,7 @@ rootOps[0x27] = function(instruction, oldPc) {
 rootOps[0x2f] = function(instruction, oldPc) {
     log("> cpl");
     time += 4;
+    markHeat("cpl");
     
     reg8[A] = ~reg8[A];
     reg8[F] |= FH | FN;
@@ -1271,14 +1519,16 @@ rootOps[0x2f] = function(instruction, oldPc) {
 parentOps[0xed][0x44] = function(instruction, oldPc) {
     log("> neg");
     time += 8;
+    markHeat("neg");
     
     reg8[A] = -reg8[A];
-    reg8[F] = subCf(0, -reg8[A], 1, 2, false);
+    reg8[F] = subCf(0, reg8[A], 1, 2, false);
 };
 
 rootOps[0x3f] = function(instruction, oldPc) {
     log("> ccf");
     time += 4;
+    markHeat("ccf");
     
     let oldC = (reg8[F] & FC) != 0;
     reg8[F] &= ~(FC | FH | FN);
@@ -1292,6 +1542,7 @@ rootOps[0x3f] = function(instruction, oldPc) {
 rootOps[0x37] = function(instruction, oldPc) {
     log("> scf");
     time += 4;
+    markHeat("scf");
     
     reg8[F] &= ~(FH | FN);
     reg8[F] |= FC;
@@ -1300,11 +1551,13 @@ rootOps[0x37] = function(instruction, oldPc) {
 rootOps[0x00] = function(instruction, oldPc) {
     log("> nop");
     time += 4;
+    markHeat("nop");
 };
 
 rootOps[0x76] = function(instruction, oldPc) {
     log("> halt");
     time += 4;
+    markHeat("halt");
     
     halted = true;
 };
@@ -1312,22 +1565,25 @@ rootOps[0x76] = function(instruction, oldPc) {
 rootOps[0xf3] = function(instruction, oldPc) {
     log("> di");
     time += 4;
+    markHeat("di");
     
     iff1 = 0;
     iff2 = 0;
 };
 
-
 rootOps[0xfb] = function(instruction, oldPc) {
     log("> ei");
     time += 4;
+    markHeat("ei");
     
     iff1 = 1;
     iff2 = 1;
+    interruptCooldown = 1;
 };
 
 fillMask(0x46, 0x18, parentOps[0xed], (instruction, oldPc) => {
     time += 8;
+    markHeat("im");
     
     intMode = (instruction >> 3) & 0b11;
     
@@ -1342,6 +1598,7 @@ fillMask(0x46, 0x18, parentOps[0xed], (instruction, oldPc) => {
 fillMask(0x09, 0x30, rootOps, (instruction, oldPc) => {
     log("> add hl,ss");
     time += 11;
+    markHeat("add(16)");
     let base;
     let src;
     let reg = (instruction >> 4) & 0b11;
@@ -1358,18 +1615,13 @@ fillMask(0x09, 0x30, rootOps, (instruction, oldPc) => {
     let val = getIndirect() + src;
     reg8[F] = addCf(getIndirect(), src, 2, false);
     
-    if(reg == 0b10 && indirect != 0b111) {
-        // IX/IY
-        setIndirect(val);
-    }else{
-        // Any other pair
-        setRegPair(HL, val);
-    }
+    setIndirect(val);
 });
 
 fillMask(0x4a, 0x30, parentOps[0xed], (instruction, oldPc) => {
     log("> adc hl,ss");
     time += 15;
+    markHeat("adc(16)");
     let reg = (instruction >> 4) & 0b11;
     
     let src = getRegPair(reg);
@@ -1381,21 +1633,22 @@ fillMask(0x4a, 0x30, parentOps[0xed], (instruction, oldPc) => {
 });
 
 fillMask(0x42, 0x30, parentOps[0xed], (instruction, oldPc) => {
-    log("> subc hl,ss");
+    log("> sbc hl,ss");
     time += 15;
+    markHeat("sbc(16)");
     let reg = (instruction >> 4) & 0b11;
     
     let src = getRegPair(reg);
     
     let val = getRegPair(HL) - src - ((reg8[F] & FC) ? 1 : 0);
-    reg8[F] = subCf(getRegPair(HL), src, 2, 2, true);
+    reg8[F] = subCf(getRegPair(HL), src, 2, true);
     
     setRegPair(HL, val);
 });
 
 fillMask(0x03, 0x30, rootOps, (instruction, oldPc) => {
-    log("> inc ss");
     time += 6;
+    markHeat("inc(16)");
     let base;
     let src;
     let reg = (instruction >> 4) & 0b11;
@@ -1404,13 +1657,14 @@ fillMask(0x03, 0x30, rootOps, (instruction, oldPc) => {
         // IX/IY
         time += 4;
         src = getIndirect();
+        log("> inc " + indirectString());
     }else{
         // Any other pair
         src = getRegPair(reg);
+        log("> inc " + regPairString(reg));
     }
     
     let val = src + 1;
-    reg8[F] = addCf(src, 1, 2, false);
     
     if(reg == 0b10 && indirect != 0b111) {
         // IX/IY
@@ -1422,8 +1676,8 @@ fillMask(0x03, 0x30, rootOps, (instruction, oldPc) => {
 });
 
 fillMask(0x0b, 0x30, rootOps, (instruction, oldPc) => {
-    log("> dec ss");
     time += 6;
+    markHeat("dec(16)");
     let base;
     let src;
     let reg = (instruction >> 4) & 0b11;
@@ -1432,13 +1686,14 @@ fillMask(0x0b, 0x30, rootOps, (instruction, oldPc) => {
         // IX/IY
         time += 4;
         src = getIndirect();
+        log("> dec " + indirectString());
     }else{
         // Any other pair
         src = getRegPair(reg);
+        log("> dec " + regPairString(reg));
     }
     
     let val = src - 1;
-    reg8[F] = subCf(src, 1, 2, 2, false);
     
     if(reg == 0b10 && indirect != 0b111) {
         // IX/IY
@@ -1490,6 +1745,7 @@ let shiftSet = function(instruction, value, c) {
 rootOps[0x07] = function(instruction, oldPc) {
     log("> rlca");
     time += 4;
+    markHeat("rlca");
     
     let c = reg8[A] >>> 7;
     
@@ -1503,6 +1759,7 @@ rootOps[0x07] = function(instruction, oldPc) {
 rootOps[0x17] = function(instruction, oldPc) {
     log("> rla");
     time += 4;
+    markHeat("rla");
     
     let oldC = (reg8[F] & FC) ? 1 : 0;
     let c = reg8[A] >>> 7;
@@ -1517,6 +1774,7 @@ rootOps[0x17] = function(instruction, oldPc) {
 rootOps[0x0f] = function(instruction, oldPc) {
     log("> rrca");
     time += 4;
+    markHeat("rrca");
     
     let c = reg8[A] & 0b1;
     
@@ -1530,6 +1788,7 @@ rootOps[0x0f] = function(instruction, oldPc) {
 rootOps[0x1f] = function(instruction, oldPc) {
     log("> rra");
     time += 4;
+    markHeat("rra");
     
     let oldC = (reg8[F] & FC) ? 1 : 0;
     let c = reg8[A] & 0b1;
@@ -1544,6 +1803,7 @@ rootOps[0x1f] = function(instruction, oldPc) {
 fillMask(0x00, 0x7, parentOps[0xcb], (instruction, oldPc) => {
     log("> rlc m");
     time += 8;
+    markHeat("rlc");
     
     let src = shiftGet(instruction);
     let c = src >>> 7;
@@ -1557,6 +1817,7 @@ fillMask(0x00, 0x7, parentOps[0xcb], (instruction, oldPc) => {
 fillMask(0x10, 0x7, parentOps[0xcb], (instruction, oldPc) => {
     log("> rl m");
     time += 8;
+    markHeat("rl");
     let oldC = (reg8[F] & FC) ? 1 : 0;
     
     let src = shiftGet(instruction);
@@ -1571,6 +1832,7 @@ fillMask(0x10, 0x7, parentOps[0xcb], (instruction, oldPc) => {
 fillMask(0x08, 0x7, parentOps[0xcb], (instruction, oldPc) => {
     log("> rrc m");
     time += 8;
+    markHeat("rrc");
     
     let src = shiftGet(instruction);
     let c = src & 0b1;
@@ -1584,6 +1846,7 @@ fillMask(0x08, 0x7, parentOps[0xcb], (instruction, oldPc) => {
 fillMask(0x18, 0x7, parentOps[0xcb], (instruction, oldPc) => {
     log("> rr m");
     time += 8;
+    markHeat("rr");
     let oldC = (reg8[F] & FC) ? 1 : 0;
     
     let src = shiftGet(instruction);
@@ -1598,7 +1861,7 @@ fillMask(0x18, 0x7, parentOps[0xcb], (instruction, oldPc) => {
 fillMask(0x20, 0x7, parentOps[0xcb], (instruction, oldPc) => {
     log("> sla m");
     time += 8;
-    let src;
+    markHeat("sla");
     
     let src = shiftGet(instruction);
     let c = src >>> 7;
@@ -1611,6 +1874,7 @@ fillMask(0x20, 0x7, parentOps[0xcb], (instruction, oldPc) => {
 fillMask(0x28, 0x7, parentOps[0xcb], (instruction, oldPc) => {
     log("> sra m");
     time += 8;
+    markHeat("sra");
     
     let src = shiftGet(instruction);
     let c = src & 0b1;
@@ -1624,6 +1888,7 @@ fillMask(0x28, 0x7, parentOps[0xcb], (instruction, oldPc) => {
 fillMask(0x38, 0x7, parentOps[0xcb], (instruction, oldPc) => {
     log("> srl m");
     time += 8;
+    markHeat("srl");
     
     let src = shiftGet(instruction);
     let c = src & 0b1;
@@ -1636,6 +1901,7 @@ fillMask(0x38, 0x7, parentOps[0xcb], (instruction, oldPc) => {
 parentOps[0xed][0x6f] = function(instruction, oldPc) {
     log("> rld");
     time += 18;
+    markHeat("rld");
     
     let val = readMemory8(getRegPair(HL));
     val |= reg8[A] << 8;
@@ -1656,6 +1922,7 @@ parentOps[0xed][0x6f] = function(instruction, oldPc) {
 parentOps[0xed][0x6f] = function(instruction, oldPc) {
     log("> rrd");
     time += 18;
+    markHeat("rrd");
     
     let val = readMemory8(getRegPair(HL));
     val |= reg8[A] << 8;
@@ -1692,6 +1959,19 @@ let bitGet = function(instruction) {
     }
 };
 
+let bitString = function(op, instruction) {
+    let reg = instruction & 0b111;
+    let bit = (instruction >>> 3) & 0b111;
+    
+    if(reg == 0b110) {
+        // Memory
+        log("> " + op + " " + bit + ",(" + indirectString() + " + 0x" + getIndirectDisplacement().toString(16) + ")");
+    }else{
+        // Register
+        log("> " + op + " " + bit + "," + regString(reg));
+    }
+};
+
 let bitSet = function(instruction, value) {
     let reg = instruction & 0b111;
     
@@ -1705,12 +1985,13 @@ let bitSet = function(instruction, value) {
 };
 
 fillMask(0x40, 0x3f, parentOps[0xcb], (instruction, oldPc) => {
-    log("> bit b,m");
     time += 8;
+    markHeat("bit");
     
     let src = bitGet(instruction);
     let b = (instruction >>> 3) & 0b111;
     let mask = 1 << b;
+    bitString("bit", instruction);
     
     reg8[F] &= FC;
     if(!(src & mask)) reg8[F] |= FZ;
@@ -1718,12 +1999,13 @@ fillMask(0x40, 0x3f, parentOps[0xcb], (instruction, oldPc) => {
 });
 
 fillMask(0xc0, 0x3f, parentOps[0xcb], (instruction, oldPc) => {
-    log("> set b,m");
     time += 8;
+    markHeat("set");
     
     let src = bitGet(instruction);
     let b = (instruction >>> 3) & 0b111;
     let mask = 1 << b;
+    bitString("set", instruction);
     
     src |= mask;
     
@@ -1731,12 +2013,13 @@ fillMask(0xc0, 0x3f, parentOps[0xcb], (instruction, oldPc) => {
 });
 
 fillMask(0x80, 0x3f, parentOps[0xcb], (instruction, oldPc) => {
-    log("> res b,m");
     time += 8;
+    markHeat("res");
     
     let src = bitGet(instruction);
     let b = (instruction >>> 3) & 0b111;
     let mask = 1 << b;
+    bitString("res", instruction);
     
     src &= ~mask;
     
@@ -1780,6 +2063,7 @@ let conditionString = function(instruction) {
 
 rootOps[0xc3] = function(instruction, oldPc) {
     time += 10;
+    markHeat("jp");
     
     let n = pcAndAdvance(2);
     
@@ -1789,6 +2073,7 @@ rootOps[0xc3] = function(instruction, oldPc) {
 
 fillMask(0xc2, 0x38, rootOps, (instruction, oldPc) => {
     time += 10;
+    markHeat("jp");
     
     let n = pcAndAdvance(2);
     
@@ -1802,6 +2087,7 @@ fillMask(0xc2, 0x38, rootOps, (instruction, oldPc) => {
 
 rootOps[0x18] = function(instruction, oldPc) {
     time += 12;
+    markHeat("jr");
     
     let displacement = pcAndAdvance(1);
     log("> jr #$" + makeSigned(displacement, 1).toString(16));
@@ -1811,6 +2097,7 @@ rootOps[0x18] = function(instruction, oldPc) {
 
 fillMask(0x20, 0x18, rootOps, (instruction, oldPc) => {
     time += 10;
+    markHeat("jr");
     
     let displacement = pcAndAdvance(1);
     log("> jr " + conditionString(instruction & 0x18) + ", #$" + makeSigned(displacement, 1).toString(16));
@@ -1824,6 +2111,7 @@ fillMask(0x20, 0x18, rootOps, (instruction, oldPc) => {
 rootOps[0xe9] = function(instruction, oldPc) {
     log("> jp " + indirectString());
     time += 4;
+    markHeat("jp");
     if(indirect != 0b111) time += 4;
     
     reg16[PC] = getIndirect();
@@ -1832,6 +2120,7 @@ rootOps[0xe9] = function(instruction, oldPc) {
 rootOps[0x10] = function(instruction, oldPc) {
     log("> djnz");
     time += 8;
+    markHeat("djnz");
     
     let displacement = pcAndAdvance(1);
     
@@ -1839,7 +2128,7 @@ rootOps[0x10] = function(instruction, oldPc) {
     
     if(reg8[B] != 0) {
         time += 5;
-        reg16[PC] += makeSigned(displacement, 1) + 2;
+        reg16[PC] += makeSigned(displacement, 1);
     }
 };
 
@@ -1848,10 +2137,12 @@ rootOps[0x10] = function(instruction, oldPc) {
 // Call and Return Group
 // ----
 rootOps[0xcd] = function(instruction, oldPc) {
-    log("> call nn");
     time += 17;
+    markHeat("call");
+    addStack(reg16[PC]);
     
     let dest = pcAndAdvance(2);
+    log("> call (#$" + dest.toString(16)+")");
     
     reg16[SP] -= 2;
     writeMemory16(reg16[SP], reg16[PC]);
@@ -1862,11 +2153,13 @@ rootOps[0xcd] = function(instruction, oldPc) {
 fillMask(0xc4, 0x38, rootOps, (instruction, oldPc) => {
     log("> call cc,nn");
     time += 10;
+    markHeat("call");
     
     let dest = pcAndAdvance(2);
     
     if(doCondition(instruction)) {
         time += 7;
+        addStack(reg16[PC]);
         
         reg16[SP] -= 2;
         writeMemory16(reg16[SP], reg16[PC]);
@@ -1878,6 +2171,8 @@ fillMask(0xc4, 0x38, rootOps, (instruction, oldPc) => {
 rootOps[0xc9] = function(instruction, oldPc) {
     log("> ret");
     time += 10;
+    markHeat("ret");
+    popStack();
     
     reg16[PC] = readMemory16(reg16[SP]);
     reg16[SP] += 2;
@@ -1886,6 +2181,8 @@ rootOps[0xc9] = function(instruction, oldPc) {
 fillMask(0xc0, 0x38, rootOps, (instruction, oldPc) => {
     log("> ret cc");
     time += 5;
+    markHeat("ret");
+    popStack();
     
     if(doCondition(instruction)) {
         time += 6;
@@ -1898,6 +2195,8 @@ fillMask(0xc0, 0x38, rootOps, (instruction, oldPc) => {
 parentOps[0xed][0x4d] = function(instruction, oldPc) {
     log("> reti");
     time += 14;
+    markHeat("reti");
+    popStack();
     
     reg16[PC] = readMemory16(reg16[SP]);
     reg16[SP] += 2;
@@ -1908,6 +2207,8 @@ parentOps[0xed][0x4d] = function(instruction, oldPc) {
 parentOps[0xed][0x45] = function(instruction, oldPc) {
     log("> retn");
     time += 14;
+    markHeat("retn");
+    popStack();
     
     reg16[PC] = readMemory16(reg16[SP]);
     reg16[SP] += 2;
@@ -1918,6 +2219,7 @@ parentOps[0xed][0x45] = function(instruction, oldPc) {
 
 fillMask(0xc7, 0x38, rootOps, (instruction, oldPc) => {
     time += 11;
+    markHeat("rst");
     
     let t = instruction & 0b00111000;
     log("> rst #$" + t.toString(16));
@@ -1934,21 +2236,23 @@ fillMask(0xc7, 0x38, rootOps, (instruction, oldPc) => {
 // ----
 
 rootOps[0xdb] = function(instruction, oldPc) {
-    log("> in a,(n)");
     time += 11;
+    markHeat("in");
     
     let port = pcAndAdvance(1);
+    log("> in A,(0x" + port.toString(16) + ")");
     let val = portIn(port);
     
     reg8[A] = val;
 };
 
 fillMask(0x40, 0x30, parentOps[0xed], (instruction, oldPc) => {
-    log("> in r,(c)");
     time += 12;
+    markHeat("in");
     let reg = (instruction >>> 3) & 0b111;
     
     let port = reg8[C];
+    log("> in " + regString(reg) + ",(0x" + port.toString(16) + ")");
     let val = portIn(port);
     
     reg8[reg] = val;
@@ -1962,6 +2266,7 @@ fillMask(0x40, 0x30, parentOps[0xed], (instruction, oldPc) => {
 parentOps[0xed][0xa2] = function(instruction, oldPc) {
     log("> ini");
     time += 16;
+    markHeat("ini");
     
     let port = reg8[C];
     let val = portIn(port);
@@ -1970,18 +2275,19 @@ parentOps[0xed][0xa2] = function(instruction, oldPc) {
     writeMemory8(getRegPair(HL), val);
     setRegPair(HL, getRegPair(HL) + 1);
     
-    reg8[F] &= ~FC;
+    reg8[F] &= ~(FC | FN | FZ);
     reg8[F] |= FN;
     if(!reg8[B]) reg8[F] |= FZ;
 };
 
 parentOps[0xed][0xb2] = function(instruction, oldPc) {
     log("> inir");
+    markHeat("inir");
     
     parentOps[0xed][0xa2](instruction, oldPc); // Call the ini instruction
     
     // Check its flags
-    if(reg8[F] & FZ) {
+    if(!(reg8[F] & FZ)) {
         time += 5;
         reg16[PC] -= 2;
     }
@@ -1990,42 +2296,46 @@ parentOps[0xed][0xb2] = function(instruction, oldPc) {
 parentOps[0xed][0xaa] = function(instruction, oldPc) {
     log("> ind");
     time += 16;
+    markHeat("ind");
     
     let port = reg8[C];
     let val = portIn(port);
     
     reg8[B] --;
-    writeMemory8(getRegPair(HL), 0xff);
+    writeMemory8(getRegPair(HL), val);
     setRegPair(HL, getRegPair(HL) - 1);
     
-    reg8[F] &= ~FC;
+    reg8[F] &= ~(FC | FN | FZ);
     reg8[F] |= FN;
     if(!reg8[B]) reg8[F] |= FZ;
 };
 
 parentOps[0xed][0xba] = function(instruction, oldPc) {
     log("> indr");
+    markHeat("indr");
     
     parentOps[0xed][0xaa](instruction, oldPc); // Call the ini instruction
     
     // Check its flags
-    if(reg8[F] & FZ) {
+    if(!(reg8[F] & FZ)) {
         time += 5;
         reg16[PC] -= 2;
     }
 };
 
 rootOps[0xd3] = function(instruction, oldPc) {
-    log("> out (n),a");
     time += 11;
+    markHeat("out");
     
     let port = pcAndAdvance(1);
+    log("> out (0x" + port.toString(16) + "),A");
     portOut(port, reg8[A]);
 };
 
-fillMask(0x41, 0x30, parentOps[0xed], (instruction, oldPc) => {
+fillMask(0x41, 0x38, parentOps[0xed], (instruction, oldPc) => {
     log("> out (c),r");
     time += 12;
+    markHeat("out");
     let reg = (instruction >>> 3) & 0b111;
     
     let port = reg8[C];
@@ -2035,6 +2345,7 @@ fillMask(0x41, 0x30, parentOps[0xed], (instruction, oldPc) => {
 parentOps[0xed][0xa3] = function(instruction, oldPc) {
     log("> outi");
     time += 16;
+    markHeat("outi");
     
     let port = reg8[C];
     portOut(port, readMemory8(getRegPair(HL)));
@@ -2042,18 +2353,19 @@ parentOps[0xed][0xa3] = function(instruction, oldPc) {
     reg8[B] --;
     setRegPair(HL, getRegPair(HL) + 1);
     
-    reg8[F] &= ~FC;
+    reg8[F] &= ~(FC | FZ | FN);
     reg8[F] |= FN;
     if(!reg8[B]) reg8[F] |= FZ;
 };
 
 parentOps[0xed][0xb3] = function(instruction, oldPc) {
     log("> outir");
+    markHeat("outir");
     
     parentOps[0xed][0xa3](instruction, oldPc); // Call the outi instruction
     
     // Check its flags
-    if(reg8[F] & FZ) {
+    if(!(reg8[F] & FZ)) {
         time += 5;
         reg16[PC] -= 2;
     }
@@ -2062,6 +2374,7 @@ parentOps[0xed][0xb3] = function(instruction, oldPc) {
 parentOps[0xed][0xab] = function(instruction, oldPc) {
     log("> outd");
     time += 16;
+    markHeat("outd");
     
     let port = reg8[C];
     portOut(port, readMemory8(getRegPair(HL)));
@@ -2069,18 +2382,19 @@ parentOps[0xed][0xab] = function(instruction, oldPc) {
     reg8[B] --;
     setRegPair(HL, getRegPair(HL) - 1);
     
-    reg8[F] &= ~FC;
+    reg8[F] &= ~(FC | FZ | FN);
     reg8[F] |= FN;
     if(!reg8[B]) reg8[F] |= FZ;
 };
 
 parentOps[0xed][0xbb] = function(instruction, oldPc) {
     log("> outdr");
+    markHeat("outdr");
     
     parentOps[0xed][0xab](instruction, oldPc); // Call the outd instruction
     
     // Check its flags
-    if(reg8[F] & FZ) {
+    if(!(reg8[F] & FZ)) {
         time += 5;
         reg16[PC] -= 2;
     }
