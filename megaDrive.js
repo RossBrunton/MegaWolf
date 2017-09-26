@@ -72,6 +72,8 @@ export class MegaDrive {
         
         // MD Interrupt
         this.mdInt = new InterruptBus(this, [this.m68k, this.z80]);
+        
+        setInterval(this.poll.bind(this), 0);
     }
     
     loadRom(rom) {
@@ -260,8 +262,9 @@ export class MegaDrive {
         //console.log("Delta: " + (this.time - this.m68k.time));
         
         if(this.mode == MODE_MD) {
+            let c = 0;
             while(this.m68k.time < this.time) {
-                this.poll();
+                if(c++ == 100) this.poll();
                 let ret = this.m68k.doInstruction();
                 
                 if(!ret) {
@@ -270,9 +273,6 @@ export class MegaDrive {
                     return;
                 }
             }
-        }else{
-            clearInterval(this.workerCheckInterval);
-            setInterval(this.poll.bind(this), 0);
         }
         //this.m68k.updateSpans();
         
