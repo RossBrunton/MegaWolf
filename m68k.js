@@ -436,6 +436,7 @@ export class M68k {
         this.stopped = false;
         this.heat = new Uint32Array(opcodes.length);
         if(TRACE_STATE) this.state = new Uint32Array(19);
+        this._pendingInterrupt = 0;
     }
     
     log(msg) {
@@ -834,16 +835,15 @@ export class M68k {
         }
         
         // Check for external exception
-        let i = this.emu.vdp.interrupt();
         let mask = (this.registers[SR] >>> 8) & 0b111; // Is this right?
-        if(i > mask) {
-            this.emu.vdp.clearInterrupt();
+        if(this._pendingInterrupt > mask) {
             this.time += 44;
-            this.trap(0x18 + i);
+            this.trap(0x18 + this._pendingInterrupt);
             
             // Set the interrupt mask thing
             this.registers[SR] &= ~0x700;
-            this.registers[SR] |= i << 8;
+            this.registers[SR] |= this._pendingInterrupt << 8;
+            this._pendingInterrupt = 0;
         }
         
         // Have we been stopped?
@@ -896,6 +896,10 @@ export class M68k {
         }
         
         return true;
+    }
+    
+    handleInterrupt(bus, source, vector) {
+        this._pendingInterrupt = vector;
     }
     
     updateSpans() {

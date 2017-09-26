@@ -69,6 +69,9 @@ export class MegaDrive {
             [this.vdp, 0xc0000f, 0x00000f],
             [this.mainRam, 0xffffff, 0x00ffff]
         ]);
+        
+        // MD Interrupt
+        this.mdInt = new InterruptBus(this, [this.m68k, this.z80]);
     }
     
     loadRom(rom) {
@@ -238,20 +241,6 @@ export class MegaDrive {
         this.m68k.start();
     }
     
-    doInstruction() {
-        return this.m68k.doInstruction();
-    }
-    
-    doUntilFail(count) {
-        for(let i = count; i > 0; i --) {
-            if(!this.doInstruction()) {
-                return false;
-            }
-        }
-        
-        return true;
-    }
-    
     runTime(factor) {
         this.running = true;
         
@@ -272,8 +261,8 @@ export class MegaDrive {
         
         if(this.mode == MODE_MD) {
             while(this.m68k.time < this.time) {
+                this.poll();
                 let ret = this.m68k.doInstruction();
-                this.z80.checkWorker();
                 
                 if(!ret) {
                     console.log("Emulator stopping...");
@@ -283,7 +272,7 @@ export class MegaDrive {
             }
         }else{
             clearInterval(this.workerCheckInterval);
-            setInterval(this.z80.checkWorker.bind(this.z80), 0);
+            setInterval(this.poll.bind(this), 0);
         }
         //this.m68k.updateSpans();
         
@@ -296,5 +285,10 @@ export class MegaDrive {
         }else{
             return NTSC_CLOCK;
         }
+    }
+    
+    poll() {
+        this.vdp.poll();
+        this.z80.poll();
     }
 }

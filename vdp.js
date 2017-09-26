@@ -360,12 +360,12 @@ export class Vdp extends Component {
         //document.querySelector("#vram").getContext("2d").putImageData(this.dumpHScroll(), 0, 0);
     }
     
-    interrupt() {
-        return this.registers[REX];
-    }
-    
-    clearInterrupt() {
-        this.registers[REX] = 0;
+    poll() {
+        // Check for interrupts
+        if(this.registers[REX]) {
+            this.emu.mdInt.sendInterrupt(this, this.registers[REX]);
+            this.registers[REX] = 0;
+        }
     }
     
     handleMemoryRead(bus, addr, length, littleEndian) {

@@ -143,6 +143,10 @@ export class Z80 {
         this.worker.postMessage([MSG_FRAME, [factor]]);
     }
     
+    handleInterrupt(bus, source, vector) {
+        this.shared[SHM_INT] = vector;
+    }
+    
     readMemory(i) {
         i = i & 0xffff;
         
@@ -210,12 +214,7 @@ export class Z80 {
         console.warn("Unknown port write " + p.toString(16) + " : " + val.toString(16));
     }
     
-    checkWorker() {
-        if(this.emu.vdp.interrupt()) {
-            // TODO: This likely doesn't work in mega drive mode
-            this.shared[SHM_INT] = this.emu.vdp.interrupt();
-        }
-        
+    poll() {
         let io = Atomics.load(this.shared, SHM_IO);
         if(io) {
             if(io == MEM_READ) {
@@ -228,7 +227,6 @@ export class Z80 {
                 this._portOut(Atomics.load(this.shared, SHM_ADDR), Atomics.load(this.shared, SHM_DATA));
             }else if(io == MEM_ICLR) {
                 this.shared[SHM_INT] = 0;
-                if(this.emu.mode == "ms") this.emu.vdp.clearInterrupt();
             }
             Atomics.store(this.shared, SHM_IO, 0);
             Atomics.wake(this.shared, SHM_IO);
