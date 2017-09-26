@@ -1,9 +1,86 @@
 "use strict";
 
+import {Component} from "./busses.js";
+
 let DEBUG = false;
 let log = function(msg) {
     if(DEBUG) {
         console.log("[controller] " + msg);
+    }
+}
+
+export class ControllerMultiplexer extends Component {
+    constructor(emulator, ports) {
+        super();
+        
+        if(!ports) {
+            this.ports = [new Controller(), new Controller(), new Controller()];
+        }else if(ports.length == 1) {
+            this.ports = [ports[0], new Controller(), new Controller()];
+        }else if(ports.length == 2) {
+            this.ports = [ports[0], ports[1], new Controller()];
+        }else if(ports.length == 3) {
+            this.ports = [ports[0], ports[1], ports[2]];
+        }
+        
+        this.emulator = emulator;
+        this._time = 0;
+    }
+    
+    handleMemoryRead(bus, addr, length, littleEndian) {
+        addr = addr & ~0b1;
+        
+        switch(addr) {
+            case 0x0:
+                // Version register
+                return this.emulator.options.version;
+            
+            case 0x2:
+            case 0x4:
+            case 0x6:
+                // Data port
+                return this.ports[(addr / 2) - 1].readData(this._time);
+            
+            case 0x8:
+            case 0xa:
+            case 0xc:
+                // Control port
+                return this.ports[(addr / 2) - 4].readControl(this._time);
+            
+            default:
+                console.error("Unknown controller multiplexer read at 0x" + addr.toString(16));
+        }
+    }
+    
+    handleMemoryWrite(bus, addr, value, length, littleEndian) {
+        addr = addr & ~0b1;
+        
+        switch(addr) {
+            case 0x0:
+                // Version register
+                // TODO: What should I do?
+                return;
+            
+            case 0x2:
+            case 0x4:
+            case 0x6:
+                // Data port
+                return void this.ports[(addr / 2) - 1].writeData(value, this._time);
+            
+            case 0x8:
+            case 0xa:
+            case 0xc:
+                // Control port
+                return void this.ports[(addr / 2) - 4].writeControl(value, this._time);
+            
+            default:
+                console.error("Unknown controller multiplexer write at 0x" + addr.toString(16)
+                    + " value 0x" + value.toString(16));
+        }
+    }
+    
+    handleAdvanceTime(bus, time) {
+        this._time += time;
     }
 }
 

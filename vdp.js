@@ -1,5 +1,7 @@
 "use strict";
 
+import {Component} from "./busses.js";
+
 const MSG_INIT = 0;
 const MSG_RAF = 1;
 const MSG_FRAME = 2;
@@ -63,8 +65,9 @@ let colours = function(x) {
 
 // TODO: 8 bit writes corectly
 
-export class Vdp {
+export class Vdp extends Component {
     constructor(emulator) {
+        super();
         this.emu = emulator;
         
         this.worker = new Worker("./vdp_worker.js", {"type":"module"});
@@ -363,5 +366,44 @@ export class Vdp {
     
     clearInterrupt() {
         this.registers[REX] = 0;
+    }
+    
+    handleMemoryRead(bus, addr, length, littleEndian) {
+        switch(addr & ~1) {
+            case 0x0:
+            case 0x2:
+                return this.readData();
+            
+            case 0x4:
+            case 0x6:
+                return this.readControl();
+            
+            case 0x8:
+            case 0xa:
+            case 0xc:
+            case 0xe:
+                return this.readHvCount();
+        }
+    }
+    
+    handleMemoryWrite(bus, addr, value, length, littleEndian) {
+        switch(addr & ~1) {
+            case 0x0:
+            case 0x2:
+                this.writeData(value);
+                return;
+            
+            case 0x4:
+            case 0x6:
+                this.writeControl(value);
+                return;
+            
+            case 0x8:
+            case 0xa:
+            case 0xc:
+            case 0xe:
+                this.writeHvCount(value);
+                return;
+        }
     }
 }

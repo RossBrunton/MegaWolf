@@ -1,8 +1,8 @@
 "use strict";
 
-import {Emulator} from "./emulator.js";
+import {MegaDrive} from "./megaDrive.js";
 
-window.emulator = new Emulator({invalidOp:"crash"});
+window.emulator = new MegaDrive({invalidOp:"crash"});
 
 window.load = function() {
     let f = document.querySelector("input[type=file]").files[0];

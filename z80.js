@@ -1,5 +1,8 @@
 "use strict";
 
+import {Ram, BusBanker, NullComponent} from "./basicComponents.js";
+import {Component, MemoryBus} from "./busses.js";
+
 const MSG_START = 0;
 const MSG_STOP = 1;
 const MSG_INIT = 2;
@@ -39,6 +42,32 @@ let log = function(msg) {
     }
 }
 
+class Z80BankSetter extends Component {
+    constructor(z80) {
+        super();
+        
+        this._z80 = z80;
+        this._bankBit = 0;
+    }
+    
+    handleMemoryWrite(bus, addr, value, length, littleEndian) {
+        let b = value & 0b1;
+        if(this._bankBit == 9) {
+            this._z80.shared[SHM_BANK] = b;
+            this._z80.banker.setBank(this._z80.shared[SHM_BANK]);
+            this._bankBit = 1;
+        }else{
+            this._z80.shared[SHM_BANK] |= b << this._bankBit;
+            this._z80.banker.setBank(this._z80.shared[SHM_BANK]);
+            this._bankBit ++;
+        }
+    }
+    
+    handleMemoryRead(bus, addr, length, littleEndian) {
+        return 0xff;
+    }
+}
+
 export class Z80 {
     constructor(emulator) {
         this.emu = emulator;
@@ -50,12 +79,20 @@ export class Z80 {
         
         this.ramBuff = new SharedArrayBuffer(8 * 1024);
         this.ram = new DataView(this.ramBuff);
+        this.banker = new BusBanker(emulator, this.emu.mdMem, 14, 0);
         
         this.worker.postMessage([MSG_INIT, [this.sharedBuff, this.emu.options, this.ramBuff]]);
         this.worker.onmessage = this.message.bind(this);
         
         this.reset = true;
-        this.bankBit = 14;
+        
+        // MD Z80 Memory
+        this.z80MdMem = new MemoryBus(this, [
+            [new Ram(this.ram), 0x3fff, 0x1fff],
+            [new NullComponent(), 0x5fff, 0x0000],
+            [new Z80BankSetter(this), 0x6000, 0x0000],
+            [this.banker, 0xffff, 0x7fff]
+        ]);
     }
     
     start() {
@@ -109,62 +146,25 @@ export class Z80 {
     readMemory(i) {
         i = i & 0xffff;
         
-        if(i < 0x4000) {
-            // Memory
-            i &= 0x1fff;
-            return this.ram.getUint16(i, false);
-        }
+        return this.z80MdMem.readMemory(i, 2, false);
     }
     
     writeMemory(i, val) {
         i &= 0xffff;
         
-        if(i < 0x4000) {
-            // Memory
-            i &= 0x1fff;
-            if(i == 0x1fff) debugger;
-            this.ram.setUint16(i, val, false);
-        }
+        this.z80MdMem.writeMemory(i, 2, false);
     }
     
     readMemory8(i) {
         i = i & 0xffff;
         
-        if(i < 0x4000) {
-            // Memory
-            i &= 0x1fff;
-            return this.ram.getUint8(i);
-        }
-        
-        if(i == 0x6000) {
-            // Bank register
-            return 0xff;
-        }
-        
-        if(i >= 0x8000) {
-            // 68k bank
-            this.emu.readMemory8((i & 0x7fff) | this.shared[SHM_BANK]);
-        }
+        return this.z80MdMem.readMemory(i, 1, false);
     }
     
     writeMemory8(i, val) {
         i &= 0xffff;
         
-        if(i < 0x4000) {
-            // Memory
-            i &= 0x1fff;
-            this.ram.setUint8(i, val);
-        }
-        
-        if(i == 0x6000) {
-            // Bank register
-            this.bankWrite(val);
-        }
-        
-        if(i >= 0x8000) {
-            // 68k bank
-            this.emu.writeMemory8((i & 0x7fff) | this.shared[SHM_BANK], val);
-        }
+        this.z80MdMem.writeMemory(i, val, 1, false);
     }
     
     _portIn(p) {
@@ -237,16 +237,5 @@ export class Z80 {
     
     loadRom(newRom, mode) {
         this.worker.postMessage([MSG_NEWROM, [newRom.buffer, mode]]);
-    }
-    
-    bankWrite(val) {
-        let b = val & 0b1;
-        if(this.bankBit == 23) {
-            this.shared[SHM_BANK] = b << 15;
-            this.bankBit = 15;
-        }else{
-            this.bankBit ++;
-            this.shared[SHM_BANK] |= b << this.bankBit;
-        }
     }
 }
