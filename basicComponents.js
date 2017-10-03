@@ -5,7 +5,9 @@ import {Component} from "./busses.js";
 export class Ram extends Component {
     constructor(sizeOrBuffer) {
         super();
-        if(sizeOrBuffer instanceof DataView) {
+        if(sizeOrBuffer instanceof ArrayBuffer || sizeOrBuffer instanceof SharedArrayBuffer) {
+            this._dv = new DataView(sizeOrBuffer);
+        }else if(sizeOrBuffer instanceof DataView) {
             this._dv = sizeOrBuffer;
         }else{
             this._dv = new DataView(new ArrayBuffer(sizeOrBuffer));

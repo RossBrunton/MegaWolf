@@ -38,7 +38,8 @@ export class MegaDrive {
             this.options.invalidOp = "trap";
         }
         
-        this.mainRam = new Ram(1024*64);
+        this.mainRamBuffer = new SharedArrayBuffer(1024 * 64);
+        this.mainRam = new Ram(this.mainRamBuffer);
         this.rom = new SwappableRom();
         
         this.copyProtected = (this.options.version & 0x0f) == 0;
@@ -134,6 +135,7 @@ export class MegaDrive {
         
         this.rom.swapRom(newRom);
         this.z80.loadRom(newRom, this.mode);
+        this.m68k.loadRom(newRom);
     }
     
     readMemory(addr) {
@@ -252,6 +254,7 @@ export class MegaDrive {
             this.displayCounter -= 1.0;
         }
         this.z80.doFrame(factor);
+        this.m68k.doFrame(factor);
         
         if(this.options.region == PAL) {
             this.time += ~~((PAL_CLOCK / FPS) * factor);
@@ -260,20 +263,6 @@ export class MegaDrive {
         }
         
         //console.log("Delta: " + (this.time - this.m68k.time));
-        
-        if(this.mode == MODE_MD) {
-            let c = 0;
-            while(this.m68k.time < this.time) {
-                if(c++ == 100) this.poll();
-                let ret = this.m68k.doInstruction();
-                
-                if(!ret) {
-                    console.log("Emulator stopping...");
-                    this.running = false;
-                    return;
-                }
-            }
-        }
         //this.m68k.updateSpans();
         
         requestAnimationFrame(this.runTime.bind(this, factor));
