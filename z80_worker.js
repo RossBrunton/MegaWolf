@@ -13,6 +13,8 @@ const MSG_RELEASE_ACK = 7;
 const MSG_ACQUIRE = 8;
 const MSG_ACQUIRE_ACK = 9;
 
+const MSG_DOIO = 10;
+
 const SHM_IO = 0;
 const SHM_DATA = 1;
 const SHM_ADDR = 2;
@@ -416,6 +418,7 @@ let readMemory8 = function(i) {
         
         Atomics.store(shared, SHM_ADDR, i);
         Atomics.store(shared, SHM_IO, MEM_READ);
+        self.postMessage([MSG_DOIO, null]);
         Atomics.wait(shared, SHM_IO, MEM_READ);
         return shared[SHM_DATA];
     }else{
@@ -490,6 +493,7 @@ let writeMemory8 = function(i, val) {
         Atomics.store(shared, SHM_DATA, val);
         Atomics.store(shared, SHM_ADDR, i);
         Atomics.store(shared, SHM_IO, MEM_WRITE);
+        self.postMessage([MSG_DOIO, null]);
         Atomics.wait(shared, SHM_IO, MEM_WRITE);
     }else{
         if(i < 0xc000) {
@@ -632,6 +636,7 @@ let reset = function(entry) {
 let portIn = function(port) {
     Atomics.store(shared, SHM_ADDR, port);
     Atomics.store(shared, SHM_IO, MEM_IOREAD);
+    self.postMessage([MSG_DOIO, null]);
     Atomics.wait(shared, SHM_IO, MEM_IOREAD);
     
     return shared[SHM_DATA];
@@ -641,6 +646,7 @@ let portOut = function(port, value) {
     Atomics.store(shared, SHM_DATA, value);
     Atomics.store(shared, SHM_ADDR, port);
     Atomics.store(shared, SHM_IO, MEM_IOWRITE);
+    self.postMessage([MSG_DOIO, null]);
     Atomics.wait(shared, SHM_IO, MEM_IOWRITE);
 };
 

@@ -16,6 +16,8 @@ const MSG_RELEASE_ACK = 7;
 const MSG_ACQUIRE = 8;
 const MSG_ACQUIRE_ACK = 9;
 
+const MSG_DOIO = 10;
+
 const SHM_IO = 0;
 const SHM_DATA = 1;
 const SHM_ADDR = 2;
@@ -134,6 +136,10 @@ export class Z80 {
                 this.emu.busOwner = "m68k";
                 break;
             
+            case MSG_DOIO:
+                this.io();
+                break;
+            
             default:
                 log("Got unknown message!");
         }
@@ -214,7 +220,7 @@ export class Z80 {
         console.warn("Unknown port write " + p.toString(16) + " : " + val.toString(16));
     }
     
-    poll() {
+    io() {
         let io = Atomics.load(this.shared, SHM_IO);
         if(io) {
             if(io == MEM_READ) {

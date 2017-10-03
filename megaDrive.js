@@ -73,8 +73,6 @@ export class MegaDrive {
         
         // MD Interrupt
         this.mdInt = new InterruptBus(this, [this.m68k, this.z80]);
-        
-        setInterval(this.poll.bind(this), 0);
     }
     
     loadRom(rom) {
@@ -274,10 +272,5 @@ export class MegaDrive {
         }else{
             return NTSC_CLOCK;
         }
-    }
-    
-    poll() {
-        this.vdp.poll();
-        this.z80.poll();
     }
 }

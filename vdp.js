@@ -6,6 +6,7 @@ const MSG_INIT = 0;
 const MSG_RAF = 1;
 const MSG_FRAME = 2;
 const MSG_RETBUF = 3;
+const MSG_DOINT = 4;
 
 const RM1 = 0;
 const RM2 = 1;
@@ -34,7 +35,6 @@ const RDMAS_HI = 23;
 const RSTATUS = 24;
 
 const RCODE = 25;
-const REX = 26;
 const RH = 27;
 const RV = 28;
 
@@ -300,6 +300,10 @@ export class Vdp extends Component {
                 document.querySelector("#display").getContext("2d").putImageData(id, 0, 0);
                 this.worker.postMessage([MSG_RETBUF, buff], [buff]);
                 break;
+            
+            case MSG_DOINT:
+                this.emu.mdInt.sendInterrupt(this, dat[0]);
+                break;
         }
     }
     
@@ -357,15 +361,7 @@ export class Vdp extends Component {
     handleFrame() {
         this.worker.postMessage([MSG_RAF, null]);
         
-        //document.querySelector("#vram").getContext("2d").putImageData(this.dumpHScroll(), 0, 0);
-    }
-    
-    poll() {
-        // Check for interrupts
-        if(this.registers[REX]) {
-            this.emu.mdInt.sendInterrupt(this, this.registers[REX]);
-            this.registers[REX] = 0;
-        }
+        document.querySelector("#vram").getContext("2d").putImageData(this.dumpVram(), 0, 0);
     }
     
     handleMemoryRead(bus, addr, length, littleEndian) {

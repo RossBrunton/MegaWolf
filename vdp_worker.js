@@ -4,6 +4,7 @@ const MSG_INIT = 0;
 const MSG_RAF = 1;
 const MSG_FRAME = 2;
 const MSG_RETBUF = 3;
+const MSG_DOINT = 4;
 
 console.log("VDP Worker Started!");
 
@@ -33,7 +34,6 @@ const RDMAS_MI = 22;
 const RDMAS_HI = 23;
 
 const RSTATUS = 24;
-const REX = 26;
 const RH = 27;
 const RV = 28;
 
@@ -167,7 +167,7 @@ let raf = function() {
     
     // VBlank interrupt
     if(registers[RM2] & 0x20) {
-        registers[REX] = 6;
+        self.postMessage([MSG_DOINT, [6]]);
         registers[RSTATUS] |= 0x0080; // Set VIP
     }
     registers[RSTATUS] |= 0x0008; // Set VB
@@ -418,7 +418,7 @@ let render = function(composeBuffer, displayBuffer) {
         // H interrupt
         if(registers[RM1] & 0x10) {
             if(y && y % registers[RHORINT_C] == 0) {
-                registers[REX] = 0x4;
+                self.postMessage([MSG_DOINT, [4]]);
             }
         }
         
